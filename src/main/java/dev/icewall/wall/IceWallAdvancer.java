@@ -46,6 +46,7 @@ public final class IceWallAdvancer {
     private final WeatherEffects weatherEffects = new WeatherEffects();
     private final GlacierMobEffects mobEffects = new GlacierMobEffects();
     private final VillagerCommunities villagerCommunities = new VillagerCommunities();
+    private final NaturalDisasters naturalDisasters = new NaturalDisasters();
     private final Map<UUID, ServerBossEvent> bossBars = new HashMap<>();
     private final Map<UUID, Double> spectatorDriftX = new HashMap<>();
     private final Map<UUID, Map<Integer, FrostEntry>> frostEntries = new HashMap<>();
@@ -96,6 +97,7 @@ public final class IceWallAdvancer {
         weatherEffects.tick(world, state);
         mobEffects.tick(world, state);
         villagerCommunities.tick(world, state);
+        naturalDisasters.tick(world, state);
         tickCompassScramble(world, state);
         tickInventoryFrost(world, state);
         tickSupplyDrop(world, state);

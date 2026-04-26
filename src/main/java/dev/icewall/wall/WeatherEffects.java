@@ -24,8 +24,9 @@ import net.minecraft.world.phys.AABB;
  * Handles all weather, sky, and environment effects tied to player proximity.
  *
  * Systems contained here:
- *   1.  Blizzard lock    — forced thunderstorm when wall within BLIZZARD_LOCK_DISTANCE
- *   2.  Whiteout fog     — Blindness pulses at WHITEOUT_DISTANCE
+ *   0.  Snow onset        — light snowfall + SNOWFLAKE particles at SNOW_ONSET_DISTANCE
+ *   1.  Blizzard lock     — forced thunderstorm when wall within BLIZZARD_LOCK_DISTANCE
+ *   2.  Whiteout fog      — Blindness pulses at WHITEOUT_DISTANCE
  *   3.  Lightning strikes — random bolts near the wall every ~LIGHTNING_INTERVAL_TICKS
  *   4.  Freeze wind push  — constant north/up knockback vector within WIND_PUSH_DISTANCE
  *   5.  Snowdrift         — snow layers stack up behind the wall over time
@@ -38,6 +39,7 @@ public final class WeatherEffects {
 
     private final Random rng = new Random();
     private boolean blizzardActive = false;
+    private boolean lightRainActive = false;
     private final java.util.Set<Long> flashFrozenChunks = new java.util.HashSet<>();
 
     public void tick(ServerLevel world, IceWallState state) {
@@ -47,12 +49,19 @@ public final class WeatherEffects {
         }
 
         int wallZ = state.getWallFrontZ();
-        boolean anyClose = false;
+        boolean anyClose  = false;   // within BLIZZARD_LOCK_DISTANCE
+        boolean anyOnset  = false;   // within SNOW_ONSET_DISTANCE but outside blizzard zone
 
         for (ServerPlayer player : world.players()) {
             if (player.isSpectator()) continue;
             int dist = player.blockPosition().getZ() - wallZ;
-            if (dist <= 0 || dist > IceWallConfig.BLIZZARD_LOCK_DISTANCE) continue;
+            if (dist <= 0 || dist > IceWallConfig.SNOW_ONSET_DISTANCE) continue;
+
+            // Snow-onset: particles for anyone in the approach corridor
+            anyOnset = true;
+            tickSnowParticles(world, player, dist);
+
+            if (dist > IceWallConfig.BLIZZARD_LOCK_DISTANCE) continue;
             anyClose = true;
 
             tickWhiteout(world, player, dist);
@@ -63,6 +72,8 @@ public final class WeatherEffects {
 
         if (anyClose) {
             ensureBlizzard(world);
+        } else if (anyOnset) {
+            ensureRain(world);
         } else {
             maybeStopBlizzard(world);
         }
@@ -73,10 +84,35 @@ public final class WeatherEffects {
     }
 
     // -----------------------------------------------------------------------
+    // 0. Snow onset — light snowfall particles during approach
+    // -----------------------------------------------------------------------
+
+    /**
+     * Sends SNOWFLAKE particles around the player. Density scales from a gentle flurry
+     * at SNOW_ONSET_DISTANCE down to a blinding whiteout at BLIZZARD_LOCK_DISTANCE.
+     * Runs every 4 ticks (staggered per player) to avoid packet spam.
+     */
+    private void tickSnowParticles(ServerLevel world, ServerPlayer player, int dist) {
+        if ((world.getGameTime() + player.getId()) % 4L != 0L) return;
+        double fraction = 1.0 - (double) dist / IceWallConfig.SNOW_ONSET_DISTANCE;
+        // 1 particle at the horizon → 30 in the blizzard fringe
+        int count = Math.max(1, (int) (30.0 * fraction));
+        double spread = 10.0 + 6.0 * (1.0 - fraction); // tighter near wall
+        world.sendParticles(player,
+                net.minecraft.core.particles.ParticleTypes.SNOWFLAKE,
+                false, false,
+                player.getX(), player.getY() + 14.0, player.getZ(),
+                count,
+                spread, 4.0, spread,
+                0.08);
+    }
+
+    // -----------------------------------------------------------------------
     // 1. Blizzard lock
     // -----------------------------------------------------------------------
 
     private void ensureBlizzard(ServerLevel world) {
+        lightRainActive = false; // blizzard supersedes light rain
         if (!blizzardActive) {
             WeatherData wd = world.getWeatherData();
             wd.setRaining(true);
@@ -89,8 +125,23 @@ public final class WeatherEffects {
         }
     }
 
+    /** Light rain (no thunder) for the approach corridor before the full blizzard. */
+    private void ensureRain(ServerLevel world) {
+        if (blizzardActive) return; // don't downgrade an active blizzard
+        if (!lightRainActive) {
+            WeatherData wd = world.getWeatherData();
+            wd.setRaining(true);
+            wd.setRainTime(20 * 60 * 30);
+            wd.setThundering(false);
+            wd.setThunderTime(0);
+            wd.setClearWeatherTime(0);
+            wd.setDirty();
+            lightRainActive = true;
+        }
+    }
+
     private void maybeStopBlizzard(ServerLevel world) {
-        if (blizzardActive) {
+        if (blizzardActive || lightRainActive) {
             WeatherData wd = world.getWeatherData();
             wd.setRaining(false);
             wd.setRainTime(0);
@@ -98,7 +149,8 @@ public final class WeatherEffects {
             wd.setThunderTime(0);
             wd.setClearWeatherTime(20 * 60 * 20);
             wd.setDirty();
-            blizzardActive = false;
+            blizzardActive  = false;
+            lightRainActive = false;
         }
     }
 

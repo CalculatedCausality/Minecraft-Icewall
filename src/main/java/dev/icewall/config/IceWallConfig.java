@@ -52,6 +52,24 @@ public final class IceWallConfig {
     // Blocks ahead of wall within which stalactite spears may form on cave ceilings.
     public static final int STALACTITE_DISTANCE = 30;
 
+    // New cave effects.
+    // Cryo-flood: radius of powder-snow fill around a random low cave point.
+    public static final int CRYO_FLOOD_RADIUS    = 10;
+    // Cave gas: distance ahead in which underground gas-pocket Poison/Wither is applied.
+    public static final int CAVE_GAS_DISTANCE    = 40;
+    // Darkness pulse: interval between Darkness applications to underground players.
+    public static final int DARKNESS_INTERVAL    = 60;
+    // Darkness duration per pulse (ticks).
+    public static final int DARKNESS_DURATION    = 80;
+    // Stalactite barrage: how many dripstone spears to form per barrage event.
+    public static final int STALA_BARRAGE_COUNT  = 20;
+    // Sculk vein spread distance (blocks ahead of wall).
+    public static final int SCULK_SPREAD_DISTANCE = 48;
+    // Glow lichen freeze: blocks ahead of wall within which lichen is replaced.
+    public static final int LICHEN_FREEZE_DISTANCE = 32;
+    // Amethyst resonance chance denominator (1-in-N amethyst cluster → shatters).
+    public static final int AMETHYST_SHATTER_CHANCE = 6;
+
     // Hypothermia — max health reduction via AttributeModifier.
     // Players within this many blocks of the wall accumulate cold levels.
     public static final int HYPOTHERMIA_MAX_DISTANCE = 64;
@@ -91,6 +109,8 @@ public final class IceWallConfig {
 
     // Weather effects.
     // Distance at which the wall forces thunderstorm weather.
+    // Distance at which light snowfall begins (before the full blizzard kicks in).
+    public static final int SNOW_ONSET_DISTANCE    = 600;
     public static final int BLIZZARD_LOCK_DISTANCE = 300;
     // Distance at which whiteout blindness pulses are applied.
     public static final int WHITEOUT_DISTANCE = 50;
@@ -123,6 +143,9 @@ public final class IceWallConfig {
     // Ticks between frostbite respawn debuff duration (= 3 real minutes).
     public static final int FROSTBITE_DURATION_TICKS = 20 * 60 * 3;
 
+    // Village rebuild — blocks placed per tick during visible reconstruction (lower = slower/more dramatic).
+    public static final int VILLAGE_BUILD_BLOCKS_PER_TICK = 2;
+
     // Villager communities — caravan evacuation system.
     // How often (ticks) the world is scanned for new villager communities.
     public static final int VILLAGE_SCAN_INTERVAL_TICKS = 200;
@@ -138,6 +161,68 @@ public final class IceWallConfig {
     public static final int VILLAGE_SAFE_DISTANCE = 160;
     // Z-velocity added to fleeing villagers every 5 ticks.
     public static final double VILLAGE_FLEE_NUDGE = 0.14;
+
+    // Natural disasters — triggered randomly when the wall is active.
+    // Average ticks between a random disaster check (geometric distribution).
+    public static final int DISASTER_CHECK_INTERVAL = 400;
+    // 1-in-N chance per check that a disaster fires (so expected gap ≈ INTERVAL * N).
+    public static final int DISASTER_CHANCE_DENOMINATOR = 3;
+    // Maximum blocks ahead/behind the wall that disasters target.
+    public static final int DISASTER_RANGE_AHEAD = 60;
+    public static final int DISASTER_RANGE_BEHIND = 40;
+
+    // Avalanche — gravel/snow cascade column count and height drop.
+    public static final int AVALANCHE_COLUMNS = 40;
+    public static final int AVALANCHE_HEIGHT   = 6;
+
+    // Ice meteor shower — number of packed-ice projectiles per event.
+    public static final int METEOR_COUNT = 12;
+    public static final int METEOR_HEIGHT = 40; // blocks above surface to spawn FallingBlock
+
+    // Permafrost heave — surface column push-up.
+    public static final int HEAVE_COLUMNS  = 24;
+    public static final int HEAVE_MAX_RISE = 3; // maximum extra blocks pushed up
+
+    // Earthquake — force applied to players.
+    public static final double QUAKE_LAUNCH_STRENGTH = 0.5;
+    // Number of cave-in columns triggered.
+    public static final int QUAKE_COLLAPSE_COLUMNS = 60;
+
+    // Frozen geyser — ice spire burst upward.
+    public static final int GEYSER_COUNT   = 5;
+    public static final int GEYSER_HEIGHT  = 8;
+
+    // Blizzard surge — effect duration on players (ticks).
+    public static final int SURGE_DURATION_TICKS = 20 * 25;
+
+    // Ground crack — trench length and width.
+    public static final int CRACK_LENGTH = 32;
+    public static final int CRACK_DEPTH  = 5;
+
+    // Ice rain — packed-ice blocks dropped from above.
+    public static final int ICE_RAIN_COUNT = 20;
+    public static final int ICE_RAIN_HEIGHT = 30;
+
+    // Hypothermic wave — cold damage per hit to nearby mobs.
+    public static final float HYPO_WAVE_DAMAGE = 4.0f;
+    public static final int   HYPO_WAVE_RADIUS = 48;
+
+    // Frost snap — snuffs torches/campfires in a radius.
+    public static final int FROST_SNAP_RADIUS = 64;
+
+    // Snowdrift tsunami — rapid snow-layer advance distance.
+    public static final int SNOW_TSUNAMI_DISTANCE = 80;
+    public static final int SNOW_TSUNAMI_COLUMNS  = 64;
+
+    // Structural collapse — floating stone detection radius.
+    public static final int COLLAPSE_RADIUS = 32;
+    public static final int COLLAPSE_SAMPLES = 128;
+
+    // Magnetic pulse duration (ticks).
+    public static final int MAGNETIC_PULSE_DURATION = 20 * 12;
+
+    // Aurora borealis — notification range.
+    public static final int AURORA_NOTIFY_RANGE = 512;
 
     private IceWallConfig() {
     }
