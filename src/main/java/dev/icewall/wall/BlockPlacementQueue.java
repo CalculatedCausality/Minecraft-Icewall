@@ -35,7 +35,9 @@ public final class BlockPlacementQueue {
         int maxY = world.getMaxY();
         for (int x = minX; x <= maxX; x++) {
             int lead = columnLeadVariation(x);
-            routeTask(world, new FillTask(x, x, wallZ + lead, wallZ + lead, minY, maxY));
+            // topDown=true: ice descends from the sky/ceiling so in caves it appears to drip
+            // down through the ceiling before sealing the floor — a more claustrophobic effect.
+            routeTask(world, new FillTask(x, x, wallZ + lead, wallZ + lead, minY, maxY, true));
         }
     }
 
@@ -48,7 +50,7 @@ public final class BlockPlacementQueue {
         if (minX > maxX || minZ > maxZ) {
             return;
         }
-        routeTask(world, new FillTask(minX, maxX, minZ, maxZ, world.getMinY(), world.getMaxY()));
+        routeTask(world, new FillTask(minX, maxX, minZ, maxZ, world.getMinY(), world.getMaxY(), false));
     }
 
     public void onChunkLoad(ServerLevel world, ChunkPos chunkPos) {
@@ -156,15 +158,18 @@ public final class BlockPlacementQueue {
         private int currentY;
         private int currentZ;
 
-        private FillTask(int minX, int maxX, int minZ, int maxZ, int bottomY, int topYExclusive) {
+        private final boolean topDown;
+
+        private FillTask(int minX, int maxX, int minZ, int maxZ, int bottomY, int topYExclusive, boolean topDown) {
             this.minX = minX;
             this.maxX = maxX;
             this.minZ = minZ;
             this.maxZ = maxZ;
             this.bottomY = bottomY;
             this.topYExclusive = topYExclusive;
+            this.topDown = topDown;
             this.currentX = minX;
-            this.currentY = bottomY;
+            this.currentY = topDown ? topYExclusive - 1 : bottomY;
             this.currentZ = minZ;
         }
 
@@ -192,17 +197,23 @@ public final class BlockPlacementQueue {
         }
 
         private void advanceCursor() {
-            currentY += 1;
-            if (currentY < topYExclusive) {
-                return;
+            if (topDown) {
+                currentY -= 1;
+                if (currentY >= bottomY) {
+                    return;
+                }
+                currentY = topYExclusive - 1;
+            } else {
+                currentY += 1;
+                if (currentY < topYExclusive) {
+                    return;
+                }
+                currentY = bottomY;
             }
-
-            currentY = bottomY;
             currentX += 1;
             if (currentX <= maxX) {
                 return;
             }
-
             currentX = minX;
             currentZ += 1;
         }

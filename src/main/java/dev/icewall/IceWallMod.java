@@ -14,7 +14,7 @@ public final class IceWallMod implements ModInitializer {
     @Override
     public void onInitialize() {
         iceWallAdvancer.register();
-        IceWallCommands.register();
+        IceWallCommands.register(iceWallAdvancer);
         LOGGER.info("Ice Wall initialized");
     }
 }
