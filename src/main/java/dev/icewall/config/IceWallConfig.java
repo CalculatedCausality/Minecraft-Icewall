@@ -361,6 +361,14 @@ public final class IceWallConfig {
     public static final int RAIL_REPAIR_INTERVAL_TICKS = 300;
     // How many Z positions are checked per repair pass.
     public static final int RAIL_REPAIR_BATCH_SIZE = 32;
+    // How often the rail crew looks for nearby survivor cities to connect.
+    public static final int RAIL_CITY_SPUR_INTERVAL_TICKS = 400;
+    // How far behind the current rail head to scan for city connection work.
+    public static final int RAIL_CITY_SPUR_SCAN_BACK_BLOCKS = 320;
+    // Maximum lateral distance from the main line to a city gate spur.
+    public static final int RAIL_CITY_SPUR_MAX_DISTANCE = 96;
+    // City spurs are not built once a city is too close to the glacier face.
+    public static final int RAIL_CITY_SPUR_MIN_AHEAD_DISTANCE = 80;
 
     // -----------------------------------------------------------------------
     // Respawn safety
@@ -372,6 +380,46 @@ public final class IceWallConfig {
     public static final int RESPAWN_SAFE_BUFFER = 30;
     // How often to scan player respawn configs for consumed spawn points (ticks).
     public static final int RESPAWN_SCAN_INTERVAL_TICKS = 400;
+
+    // -----------------------------------------------------------------------
+    // Procedural survivor cities
+    // -----------------------------------------------------------------------
+
+    // Approximate city-to-city spacing in chunks.
+    public static final int CITY_SPACING_CHUNKS = 24;
+    // City radius in chunks around its generated anchor.
+    public static final int CITY_RADIUS_CHUNKS = 2;
+    // Cities are generated only this far ahead of the glacier face.
+    public static final int CITY_MIN_DISTANCE_AHEAD = 220;
+    public static final int CITY_MAX_DISTANCE_AHEAD = 900;
+    // 1-in-N chance that a generated building contains a named survivor resident.
+    public static final int CITY_RESIDENT_CHANCE = 3;
+    // How often to scan players for city entry/bulletin messages.
+    public static final int CITY_PLAYER_SCAN_INTERVAL_TICKS = 40;
+    // Minimum ticks between repeated city bulletin actionbar messages per player.
+    public static final int CITY_BULLETIN_INTERVAL_TICKS = 300;
+    // City players receive evacuation bell alerts when the glacier is this close.
+    public static final int CITY_EVACUATION_WARNING_DISTANCE = 280;
+    // Minimum ticks between repeated evacuation bell alerts per player.
+    public static final int CITY_EVACUATION_WARNING_INTERVAL_TICKS = 180;
+    // How often city residents receive evacuation pathing orders once bells ring.
+    public static final int CITY_RESIDENT_EVACUATION_INTERVAL_TICKS = 220;
+    // Maximum villagers moved toward a gate per resident-evacuation pulse.
+    public static final int CITY_RESIDENT_EVACUATION_BATCH_SIZE = 8;
+    // Navigation speed used by city residents walking toward evacuation gates.
+    public static final double CITY_RESIDENT_EVACUATION_SPEED = 0.75;
+    // Minimum ticks between gate-defense incident rolls for a city.
+    public static final int CITY_GATE_DEFENSE_INTERVAL_TICKS = 360;
+    // 1-in-N chance that an eligible evacuation warning starts a gate attack.
+    public static final int CITY_GATE_DEFENSE_CHANCE = 3;
+    // Maximum frozen mobs spawned in a gate-defense incident.
+    public static final int CITY_GATE_DEFENSE_MAX_MOBS = 3;
+    // Player distance from a gate within which defense warnings are shown.
+    public static final int CITY_GATE_DEFENSE_ANNOUNCEMENT_DISTANCE = 96;
+    // City chunks this far behind the glacier are converted into frozen ruins.
+    public static final int CITY_RUIN_START_DISTANCE = -16;
+    // 1-in-N chance that a frozen city chunk spawns an aftermath patrol.
+    public static final int CITY_RUIN_PATROL_CHANCE = 4;
 
     private IceWallConfig() {
     }

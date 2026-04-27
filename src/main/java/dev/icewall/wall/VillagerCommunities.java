@@ -26,8 +26,6 @@ import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
@@ -54,8 +52,6 @@ public final class VillagerCommunities {
 
     private enum CommunityState { SETTLED, EVACUATING, REBUILDING, FLED, CONSUMED }
 
-    private record PlacedBlock(BlockPos pos, BlockState state) {}
-
     private static final class Community {
         final List<UUID> members;
         int centerX;
@@ -64,7 +60,7 @@ public final class VillagerCommunities {
         boolean droppedSupplies = false;
         // Rebuild phase
         int rebuildX, rebuildZ;
-        List<PlacedBlock> buildQueue = null;
+        List<CommunityBuilder.PlacedBlock> buildQueue = null;
         boolean rebuildComplete = false;
 
         Community(List<UUID> members, int centerX, int centerZ) {
@@ -301,7 +297,7 @@ public final class VillagerCommunities {
             if (surviving > 0) {
                 community.rebuildX = community.centerX;
                 community.rebuildZ = community.centerZ + 24;
-                community.buildQueue = generateBuildPlan(
+                community.buildQueue = CommunityBuilder.generatePlan(
                         world, community.rebuildX, community.rebuildZ, surviving);
                 community.state = CommunityState.REBUILDING;
                 relocateVillagersToSite(world, community);
@@ -411,7 +407,7 @@ public final class VillagerCommunities {
         int placed = 0;
         while (!community.buildQueue.isEmpty()
                 && placed < IceWallConfig.VILLAGE_BUILD_BLOCKS_PER_TICK) {
-            PlacedBlock pb = community.buildQueue.remove(0);
+            CommunityBuilder.PlacedBlock pb = community.buildQueue.remove(0);
             if (world.getChunk(pb.pos().getX() >> 4, pb.pos().getZ() >> 4,
                     ChunkStatus.FULL, false) == null) {
                 community.buildQueue.add(pb); // defer unloaded chunks to end
@@ -431,405 +427,7 @@ public final class VillagerCommunities {
         }
     }
 
-    /**
-     * Generates a fully procedural settlement build plan.
-     *
-     * Picks a material theme seeded on community position (deterministic — same
-     * community always rebuilds identically, but different communities differ),
-     * then places 1–4 buildings each with a unique archetype, footprint, wall
-     * height, and roof style.  All blocks are queued bottom-to-top so the build
-     * rises visibly in-game.
-     */
-    private List<PlacedBlock> generateBuildPlan(ServerLevel world, int cx, int cz, int villagers) {
-        List<PlacedBlock> plan = new ArrayList<>();
-
-        // Position-seeded RNG keeps each village deterministic across server restarts
-        long seed = (long) cx * 341873128712L ^ (long) cz * 132897987541L;
-        Random br = new Random(seed);
-
-        BuildingTheme theme = THEMES[br.nextInt(THEMES.length)];
-        int numBuildings = Math.min(4, Math.max(1, (villagers + 1) / 2));
-
-        addLandmark(plan, world, cx, cz, theme, br);
-
-        // Town hall — always present, placed north of the landmark
-        int thY = world.getHeight(Heightmap.Types.WORLD_SURFACE, cx, cz - 22);
-        addBuilding(plan, cx, thY, cz - 22, theme, Archetype.TOWN_HALL, 3, 4, br);
-
-        // Roads radiating from the landmark to each building position
-        int[][] offsets = buildOffsets(numBuildings, br);
-        addRoads(plan, world, cx, cz, offsets, theme);
-
-        // Gardens — one per 2 villagers, placed east/west of the roads
-        int numGardens = Math.max(1, villagers / 3);
-        int[][] gardenOffsets = gardenOffsets(numGardens, offsets, br);
-        for (int[] go : gardenOffsets) {
-            int gx = cx + go[0];
-            int gz = cz + go[1];
-            int gy = world.getHeight(Heightmap.Types.WORLD_SURFACE, gx, gz);
-            addGarden(plan, gx, gy, gz, br);
-        }
-
-        for (int[] off : offsets) {
-            int bx = cx + off[0];
-            int bz = cz + off[1];
-            int baseY = world.getHeight(Heightmap.Types.WORLD_SURFACE, bx, bz);
-            Archetype arch = ARCHETYPES[br.nextInt(ARCHETYPES.length)];
-            int half  = 2 + br.nextInt(2);                                      // 2→5×5, 3→7×7
-            int wallH = (arch == Archetype.WATCHTOWER) ? 5 : (2 + br.nextInt(2)); // normal: 2 or 3
-            addBuilding(plan, bx, baseY, bz, theme, arch, half, wallH, br);
-        }
-
-        return plan;
-    }
-
-    /** Scatters building positions around the settlement centre with slight random jitter. */
-    private int[][] buildOffsets(int count, Random r) {
-        int[][] slots = {{0, -18}, {-16, 8}, {16, 8}, {-16, -8}, {14, -16}, {0, 20}};
-        int[][] result = new int[count][];
-        for (int i = 0; i < count; i++) {
-            int[] s = slots[i % slots.length];
-            result[i] = new int[]{s[0] + r.nextInt(7) - 3, s[1] + r.nextInt(7) - 3};
-        }
-        return result;
-    }
-
-    /**
-     * Places the community's central landmark.
-     * Randomly one of: lantern post, bell podium, or communal campfire.
-     */
-    private void addLandmark(List<PlacedBlock> plan, ServerLevel world, int cx, int cz,
-            BuildingTheme theme, Random r) {
-        int y   = world.getHeight(Heightmap.Types.WORLD_SURFACE, cx, cz);
-        int type = r.nextInt(3);
-        if (type == 0) {
-            // Tall lantern post
-            plan.add(block(cx, y,     cz, theme.foundationBlock));
-            plan.add(block(cx, y + 1, cz, theme.fenceBlock));
-            plan.add(block(cx, y + 2, cz, theme.fenceBlock));
-            plan.add(block(cx, y + 3, cz, Blocks.LANTERN));
-        } else if (type == 1) {
-            // Bell on raised plinth
-            plan.add(block(cx, y,     cz, theme.foundationBlock));
-            plan.add(block(cx, y + 1, cz, theme.foundationBlock));
-            plan.add(block(cx, y + 2, cz, Blocks.BELL));
-        } else {
-            // Community campfire
-            plan.add(block(cx, y,     cz, theme.foundationBlock));
-            plan.add(block(cx, y + 1, cz, Blocks.CAMPFIRE));
-        }
-    }
-
-    /**
-     * Places one building: foundation → floor → walls (door gap) → roof → interior.
-     *
-     * @param half   half-size of footprint (2 = 5×5, 3 = 7×7)
-     * @param wallH  wall height in blocks above floor (normal 2–3, watchtower 5)
-     */
-    private void addBuilding(List<PlacedBlock> plan, int cx, int baseY, int cz,
-            BuildingTheme theme, Archetype arch, int half, int wallH, Random r) {
-        // Foundation
-        for (int dx = -half; dx <= half; dx++)
-            for (int dz = -half; dz <= half; dz++)
-                plan.add(block(cx + dx, baseY, cz + dz, theme.foundationBlock));
-
-        // Floor
-        for (int dx = -half; dx <= half; dx++)
-            for (int dz = -half; dz <= half; dz++)
-                plan.add(block(cx + dx, baseY + 1, cz + dz, theme.floorBlock));
-
-        // Walls: perimeter only, wallH tall; door gap (2 blocks) faces south unless watchtower
-        int entryDz = (arch == Archetype.WATCHTOWER) ? -half : half;
-        for (int dx = -half; dx <= half; dx++) {
-            for (int dz = -half; dz <= half; dz++) {
-                if (Math.abs(dx) != half && Math.abs(dz) != half) continue;
-                boolean isDoor = (dx == 0 && dz == entryDz);
-                for (int dy = 2; dy <= 1 + wallH; dy++) {
-                    Block b = (isDoor && (dy == 2 || dy == 3)) ? Blocks.AIR : theme.wallBlock;
-                    plan.add(block(cx + dx, baseY + dy, cz + dz, b));
-                }
-            }
-        }
-
-        addRoof(plan, cx, baseY, cz, theme, arch, half, wallH, r);
-        addInterior(plan, cx, baseY, cz, arch, half, r);
-    }
-
-    /**
-     * Adds a roof above the walls.  Style is randomly flat, ridge, or pyramid.
-     * Watchtowers get an open parapet with corner lanterns instead.
-     */
-    private void addRoof(List<PlacedBlock> plan, int cx, int baseY, int cz,
-            BuildingTheme theme, Archetype arch, int half, int wallH, Random r) {
-        int roofY = baseY + wallH + 2;
-
-        if (arch == Archetype.WATCHTOWER) {
-            // Open crenellated parapet: fence perimeter, lanterns at corners
-            for (int dx = -half; dx <= half; dx++) {
-                for (int dz = -half; dz <= half; dz++) {
-                    if (Math.abs(dx) != half && Math.abs(dz) != half) continue;
-                    plan.add(block(cx + dx, roofY, cz + dz, theme.fenceBlock));
-                    if (Math.abs(dx) == half && Math.abs(dz) == half)
-                        plan.add(block(cx + dx, roofY + 1, cz + dz, Blocks.LANTERN));
-                }
-            }
-            return;
-        }
-
-        int style = r.nextInt(3); // 0 = flat, 1 = ridge, 2 = stepped pyramid
-
-        if (style == 0) {
-            // Flat
-            for (int dx = -half; dx <= half; dx++)
-                for (int dz = -half; dz <= half; dz++)
-                    plan.add(block(cx + dx, roofY, cz + dz, theme.roofBlock));
-
-        } else if (style == 1) {
-            // Flat base + X-axis ridge one block higher
-            for (int dx = -half; dx <= half; dx++)
-                for (int dz = -half; dz <= half; dz++)
-                    plan.add(block(cx + dx, roofY, cz + dz, theme.roofBlock));
-            for (int dx = -half; dx <= half; dx++)
-                plan.add(block(cx + dx, roofY + 1, cz, theme.roofBlock));
-
-        } else {
-            // Stepped pyramid: each tier is a full square one block smaller and one block higher
-            for (int tier = 0; tier <= half; tier++) {
-                int r2 = half - tier;
-                for (int dx = -r2; dx <= r2; dx++)
-                    for (int dz = -r2; dz <= r2; dz++)
-                        plan.add(block(cx + dx, roofY + tier, cz + dz, theme.roofBlock));
-            }
-        }
-    }
-
-    /**
-     * Adds interior furnishings appropriate to the building's archetype.
-     * All positions are kept inside the perimeter walls.
-     */
-    private void addInterior(List<PlacedBlock> plan, int cx, int baseY, int cz,
-            Archetype arch, int half, Random r) {
-        int fy = baseY + 2;  // first interior level (above floor planks)
-        int ih = half - 1;   // max interior offset (one inside the wall)
-
-        switch (arch) {
-            case DWELLING -> {
-                // Cosy: carpet strip, crafting table, lantern, flower pot
-                plan.add(block(cx - 1, fy, cz - ih, Blocks.CRAFTING_TABLE));
-                plan.add(block(cx,     fy, cz - ih, Blocks.LANTERN));
-                plan.add(block(cx + 1, fy, cz - ih, Blocks.FLOWER_POT));
-                plan.add(block(cx - 1, fy, cz,      randomCarpet(r)));
-                plan.add(block(cx,     fy, cz,      randomCarpet(r)));
-                plan.add(block(cx + 1, fy, cz,      randomCarpet(r)));
-            }
-            case WORKSHOP -> {
-                // Smithy: blast furnace, smithing table, anvil, barrels, lantern
-                plan.add(block(cx - 1, fy, cz - ih, Blocks.BLAST_FURNACE));
-                plan.add(block(cx,     fy, cz - ih, Blocks.SMITHING_TABLE));
-                plan.add(block(cx + 1, fy, cz - ih, Blocks.ANVIL));
-                plan.add(block(cx,     fy, cz,      Blocks.LANTERN));
-                plan.add(block(cx - ih, fy, cz + 1, Blocks.BARREL));
-                plan.add(block(cx + ih, fy, cz + 1, Blocks.BARREL));
-            }
-            case LIBRARY -> {
-                // Two rows of bookshelves on the back wall, lectern, lantern
-                for (int dx = -ih; dx <= ih; dx++) {
-                    plan.add(block(cx + dx, fy,     cz - ih, Blocks.BOOKSHELF));
-                    plan.add(block(cx + dx, fy + 1, cz - ih, Blocks.BOOKSHELF));
-                }
-                plan.add(block(cx,     fy, cz, Blocks.LECTERN));
-                plan.add(block(cx + 1, fy, cz, Blocks.LANTERN));
-            }
-            case STOREHOUSE -> {
-                // Barrel corners, central chest, lantern above
-                plan.add(block(cx - ih, fy, cz - ih, Blocks.BARREL));
-                plan.add(block(cx + ih, fy, cz - ih, Blocks.BARREL));
-                plan.add(block(cx - ih, fy, cz + ih, Blocks.BARREL));
-                plan.add(block(cx + ih, fy, cz + ih, Blocks.BARREL));
-                plan.add(block(cx,      fy, cz,      Blocks.CHEST));
-                plan.add(block(cx,      fy, cz - 1,  Blocks.LANTERN));
-            }
-            case WATCHTOWER -> {
-                // One lantern per floor on the back interior wall
-                for (int floor = 0; floor < 5; floor++)
-                    plan.add(block(cx, baseY + 2 + floor, cz - ih, Blocks.LANTERN));
-            }
-            case TOWN_HALL -> {
-                // Grand interior: central meeting table (carpet), podium (lectern + lantern),
-                // flanking bookshelves, bell, note block for ceremony.
-                // Carpet runner down the middle
-                for (int dz = -ih; dz <= ih; dz++)
-                    plan.add(block(cx, fy, cz + dz, randomCarpet(r)));
-                // Bookshelves on both side walls
-                for (int dz2 = -ih; dz2 <= ih; dz2++) {
-                    plan.add(block(cx - ih, fy,     cz + dz2, Blocks.BOOKSHELF));
-                    plan.add(block(cx + ih, fy,     cz + dz2, Blocks.BOOKSHELF));
-                    plan.add(block(cx - ih, fy + 1, cz + dz2, Blocks.BOOKSHELF));
-                    plan.add(block(cx + ih, fy + 1, cz + dz2, Blocks.BOOKSHELF));
-                }
-                // Mayor's podium at the north end
-                plan.add(block(cx,     fy, cz - ih, Blocks.LECTERN));
-                plan.add(block(cx - 1, fy, cz - ih, Blocks.LANTERN));
-                plan.add(block(cx + 1, fy, cz - ih, Blocks.LANTERN));
-                plan.add(block(cx,     fy, cz,      Blocks.NOTE_BLOCK));
-                plan.add(block(cx,     fy, cz + 1,  Blocks.BELL));
-            }
-            case GARDEN -> {
-                // Not used via addBuilding — handled by addGarden directly
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Building palette — themes and archetypes
-    // -----------------------------------------------------------------------
-
-    private enum Archetype { DWELLING, WORKSHOP, LIBRARY, STOREHOUSE, WATCHTOWER, TOWN_HALL, GARDEN }
-
-    // ARCHETYPES available for random assignment to ordinary buildings
-    // (TOWN_HALL and GARDEN are placed deliberately, not randomly)
-    private static final Archetype[] ARCHETYPES = {
-        Archetype.DWELLING, Archetype.WORKSHOP, Archetype.LIBRARY,
-        Archetype.STOREHOUSE, Archetype.WATCHTOWER
-    };
-
-    /**
-     * Material theme: each community uses one palette consistently across all its
-     * buildings so the settlement has a coherent visual identity.
-     */
-    private static final class BuildingTheme {
-        final Block wallBlock, floorBlock, roofBlock, foundationBlock, fenceBlock;
-        BuildingTheme(Block w, Block fl, Block ro, Block fo, Block fe) {
-            wallBlock = w; floorBlock = fl; roofBlock = ro; foundationBlock = fo; fenceBlock = fe;
-        }
-    }
-
-    private static final BuildingTheme[] THEMES = {
-        // Oak woodland
-        new BuildingTheme(Blocks.OAK_LOG,      Blocks.OAK_PLANKS,    Blocks.OAK_PLANKS,    Blocks.COBBLESTONE, Blocks.OAK_FENCE),
-        // Spruce alpine
-        new BuildingTheme(Blocks.SPRUCE_LOG,   Blocks.SPRUCE_PLANKS, Blocks.SPRUCE_PLANKS, Blocks.STONE,       Blocks.SPRUCE_FENCE),
-        // Birch meadow
-        new BuildingTheme(Blocks.BIRCH_LOG,    Blocks.BIRCH_PLANKS,  Blocks.BIRCH_PLANKS,  Blocks.COBBLESTONE, Blocks.BIRCH_FENCE),
-        // Acacia savanna
-        new BuildingTheme(Blocks.ACACIA_LOG,   Blocks.ACACIA_PLANKS, Blocks.ACACIA_PLANKS, Blocks.SANDSTONE,   Blocks.ACACIA_FENCE),
-        // Stone masonry
-        new BuildingTheme(Blocks.STONE_BRICKS, Blocks.OAK_PLANKS,   Blocks.STONE_BRICKS,  Blocks.COBBLESTONE, Blocks.OAK_FENCE),
-    };
-
-    private static final Block[] CARPETS = {
-        Blocks.RED_CARPET,    Blocks.BLUE_CARPET,   Blocks.GREEN_CARPET,
-        Blocks.YELLOW_CARPET, Blocks.ORANGE_CARPET, Blocks.PURPLE_CARPET,
-        Blocks.CYAN_CARPET,   Blocks.WHITE_CARPET,
-    };
-
-    private Block randomCarpet(Random r) { return CARPETS[r.nextInt(CARPETS.length)]; }
-
-    /**
-     * Builds gravel roads connecting the village centre to each building offset.
-     * Uses Bresenham-style stepping (axis-aligned for simplicity) and places
-     * lantern posts every 8 blocks for lighting.
-     */
-    private void addRoads(List<PlacedBlock> plan, ServerLevel world,
-            int cx, int cz, int[][] offsets, BuildingTheme theme) {
-        for (int[] off : offsets) {
-            int tx = cx + off[0];
-            int tz = cz + off[1];
-
-            // X leg
-            int step = (tx >= cx) ? 1 : -1;
-            for (int x = cx; x != tx; x += step) {
-                int y = world.getHeight(Heightmap.Types.WORLD_SURFACE, x, cz);
-                plan.add(block(x, y, cz,     Blocks.GRAVEL));
-                plan.add(block(x, y, cz + 1, Blocks.GRAVEL));
-                if (Math.abs(x - cx) % 8 == 0)
-                    plan.add(block(x, y + 1, cz - 1, Blocks.LANTERN));
-            }
-            // Z leg
-            step = (tz >= cz) ? 1 : -1;
-            for (int z = cz; z != tz; z += step) {
-                int y = world.getHeight(Heightmap.Types.WORLD_SURFACE, tx, z);
-                plan.add(block(tx,     y, z, Blocks.GRAVEL));
-                plan.add(block(tx + 1, y, z, Blocks.GRAVEL));
-                if (Math.abs(z - cz) % 8 == 0)
-                    plan.add(block(tx - 1, y + 1, z, Blocks.LANTERN));
-            }
-        }
-    }
-
-    /**
-     * Returns offsets for garden plots, placed slightly beside building positions
-     * so they don't overlap with buildings.
-     */
-    private int[][] gardenOffsets(int count, int[][] buildingOffsets, Random r) {
-        int[][] result = new int[count][];
-        for (int i = 0; i < count; i++) {
-            int[] base = buildingOffsets[i % buildingOffsets.length];
-            // Shift 10 blocks to one side (east for even i, west for odd)
-            int xShift = (i % 2 == 0) ? 12 : -12;
-            result[i] = new int[]{
-                base[0] + xShift + r.nextInt(5) - 2,
-                base[1] + r.nextInt(5) - 2
-            };
-        }
-        return result;
-    }
-
-    /**
-     * Places a fenced garden: farmland in a 5×5 grid with crops, flowers along the
-     * edges, a composter, and corner flower pots for decoration.
-     * The fence perimeter has a gate gap on the south side.
-     */
-    private void addGarden(List<PlacedBlock> plan, int cx, int baseY, int cz, Random r) {
-        int half = 3;
-        // Dirt base
-        for (int dx = -half; dx <= half; dx++)
-            for (int dz = -half; dz <= half; dz++)
-                plan.add(block(cx + dx, baseY, cz + dz, Blocks.DIRT));
-
-        // Farmland interior (3×3 in the centre, keeping 1 block around edge for flowers)
-        for (int dx = -1; dx <= 1; dx++)
-            for (int dz = -1; dz <= 1; dz++)
-                plan.add(block(cx + dx, baseY + 1, cz + dz, Blocks.FARMLAND));
-
-        // Crops on farmland — random mix of wheat/carrots/potatoes
-        Block[] crops = {Blocks.WHEAT, Blocks.CARROTS, Blocks.POTATOES};
-        for (int dx = -1; dx <= 1; dx++)
-            for (int dz = -1; dz <= 1; dz++)
-                plan.add(block(cx + dx, baseY + 2, cz + dz, crops[r.nextInt(crops.length)]));
-
-        // Flower border on the dirt edge (one block inside fence)
-        Block[] flowers = {Blocks.DANDELION, Blocks.POPPY, Blocks.CORNFLOWER, Blocks.TORCHFLOWER};
-        for (int dx = -half + 1; dx <= half - 1; dx++) {
-            for (int dz = -half + 1; dz <= half - 1; dz++) {
-                // Only on the inner ring
-                if (Math.abs(dx) != half - 1 && Math.abs(dz) != half - 1) continue;
-                // Skip the farmland area
-                if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1) continue;
-                plan.add(block(cx + dx, baseY + 1, cz + dz, Blocks.GRASS_BLOCK));
-                plan.add(block(cx + dx, baseY + 2, cz + dz, flowers[r.nextInt(flowers.length)]));
-            }
-        }
-
-        // Fence perimeter with gate gap on south side
-        for (int dx = -half; dx <= half; dx++) {
-            for (int dz = -half; dz <= half; dz++) {
-                if (Math.abs(dx) != half && Math.abs(dz) != half) continue;
-                boolean isGate = (dx == 0 && dz == half);
-                plan.add(block(cx + dx, baseY + 1, cz + dz,
-                        isGate ? Blocks.AIR : Blocks.OAK_FENCE));
-            }
-        }
-
-        // Composter and water source (irrigation)
-        plan.add(block(cx - 2, baseY + 1, cz, Blocks.COMPOSTER));
-        plan.add(block(cx + 2, baseY + 1, cz, Blocks.WATER_CAULDRON));
-    }
-
-    /** Convenience shorthand to avoid repeating `.defaultBlockState()` everywhere. */
-    private static PlacedBlock block(int x, int y, int z, Block b) {
-        return new PlacedBlock(new BlockPos(x, y, z), b.defaultBlockState());
-    }
+    // Building plan generation is delegated to CommunityBuilder.
 
     /**
      * Teleports surviving villagers near the new build site so they witness construction.

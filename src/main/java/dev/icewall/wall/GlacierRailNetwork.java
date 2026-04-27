@@ -1,5 +1,7 @@
 package dev.icewall.wall;
 
+import dev.icewall.city.CityDomain;
+import dev.icewall.city.CityDomain.CityAnchor;
 import dev.icewall.config.IceWallConfig;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -8,7 +10,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
-import java.util.UUID;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
@@ -19,8 +20,6 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.npc.villager.Villager;
-import net.minecraft.world.entity.npc.villager.VillagerProfession;
 import net.minecraft.world.entity.vehicle.minecart.MinecartChest;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -67,14 +66,17 @@ public final class GlacierRailNetwork {
     private int railHeadX = UNINITIALISED;
     private int railHeadY = UNINITIALISED;
 
-    /** UUIDs of spawned rail-crew villagers still alive in the world. */
-    private final List<UUID> workerIds = new ArrayList<>();
+    /** UUIDs of spawned rail-crew villagers — now managed by RailWorkerCrew. */
+    private final RailWorkerCrew crew = new RailWorkerCrew();
 
     /** Z positions where supply carts have already been placed (prevents doubles). */
     private final Set<Integer> usedCartZ = new HashSet<>();
 
     /** Z positions where a waystation has already been built. */
     private final Set<Integer> builtStations = new HashSet<>();
+
+    /** City anchors that already have a rail spur/station. */
+    private final Set<Long> builtCitySpurs = new HashSet<>();
 
     private int repairCursorZ = UNINITIALISED;
 
@@ -119,13 +121,19 @@ public final class GlacierRailNetwork {
 
         // Worker crew management
         if (tick % IceWallConfig.RAIL_WORKER_MANAGE_INTERVAL_TICKS == 0L) {
-            manageWorkers(world, wallZ);
+            crew.tick(world, wallZ, railHeadX, railHeadZ);
         }
 
         // Maintenance crews periodically patch rail segments that were broken,
         // buried, or overwritten by other glacier systems.
         if (tick % IceWallConfig.RAIL_REPAIR_INTERVAL_TICKS == 0L) {
             repairRailNetwork(world, wallZ);
+        }
+
+        // Connect the main line to nearby generated survivor cities with short
+        // lateral spurs and gate stations once the head has passed them.
+        if (tick % IceWallConfig.RAIL_CITY_SPUR_INTERVAL_TICKS == 0L) {
+            connectNearbyCityGates(world, wallZ);
         }
     }
 
@@ -258,72 +266,6 @@ public final class GlacierRailNetwork {
     // Worker crew management
     // -----------------------------------------------------------------------
 
-    /**
-     * Ensures RAIL_WORKER_COUNT villager Rail Crew workers exist near the
-     * construction head.  Workers that wander too far are teleported back;
-     * dead or missing workers are replaced.  Workers are set invulnerable so
-     * the cold does not kill them.
-     */
-    private void manageWorkers(ServerLevel world, int wallZ) {
-        int headZ = railHeadZ;
-        int x     = railHeadX;
-
-        // Remove entries for dead / removed entities
-        workerIds.removeIf(id -> {
-            var entity = world.getEntity(id);
-            return entity == null || entity.isRemoved();
-        });
-
-        // Teleport stray workers back to near the head
-        for (UUID id : workerIds) {
-            var entity = world.getEntity(id);
-            if (entity instanceof Villager v) {
-                int distZ = Math.abs(v.blockPosition().getZ() - headZ);
-                if (distZ > IceWallConfig.RAIL_WORKER_MAX_WANDER) {
-                    int tz = headZ - 4 + rng.nextInt(8);
-                    int ty = world.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, tz);
-                    v.teleportTo(x + (rng.nextDouble() * 4 - 2), ty, tz);
-                }
-            }
-        }
-
-        // Spawn replacements for missing workers
-        int needed = IceWallConfig.RAIL_WORKER_COUNT - workerIds.size();
-        for (int i = 0; i < needed; i++) {
-            spawnWorker(world, x, headZ);
-        }
-    }
-
-    private void spawnWorker(ServerLevel world, int x, int headZ) {
-        if (world.getChunk(x >> 4, headZ >> 4, ChunkStatus.FULL, false) == null) return;
-
-        int spawnZ = headZ - 3 + rng.nextInt(7);
-        int spawnY = world.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, spawnZ);
-
-        Villager worker = EntityType.VILLAGER.create(world, EntitySpawnReason.NATURAL);
-        if (worker == null) return;
-
-        worker.teleportTo(x + (rng.nextDouble() * 4 - 2), spawnY, spawnZ);
-
-        // Toolsmith is the closest thematic match to a construction worker
-        worker.setVillagerData(
-                worker.getVillagerData().withProfession(
-                        world.registryAccess(), VillagerProfession.TOOLSMITH));
-
-        worker.setCustomName(Component.literal("Rail Crew").withStyle(ChatFormatting.GOLD));
-        worker.setCustomNameVisible(true);
-        worker.setInvulnerable(true);
-        // Prevent them from picking up jobs / sleeping so they stay near the head
-        worker.setPersistenceRequired();
-
-        world.addFreshEntity(worker);
-        workerIds.add(worker.getUUID());
-
-        world.playSound(null, new BlockPos(x, spawnY, spawnZ),
-                SoundEvents.VILLAGER_WORK_TOOLSMITH, SoundSource.NEUTRAL,
-                0.6f, 1.0f + rng.nextFloat() * 0.2f);
-    }
-
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
@@ -440,18 +382,11 @@ public final class GlacierRailNetwork {
     }
 
     private void placeStationDeck(ServerLevel world, BlockPos deck) {
-        world.setBlock(deck, Blocks.OAK_PLANKS.defaultBlockState(), Block.UPDATE_CLIENTS);
-        for (int y = deck.getY() - 1; y >= Math.max(world.getMinY(), deck.getY() - 8); y--) {
-            BlockPos support = new BlockPos(deck.getX(), y, deck.getZ());
-            if (world.getBlockState(support).isSolid()) break;
-            world.setBlock(support, Blocks.OAK_FENCE.defaultBlockState(), Block.UPDATE_CLIENTS);
-        }
+        RailTrackLayer.placeStationDeck(world, deck);
     }
 
     private void placeStationTorch(ServerLevel world, BlockPos pos) {
-        if (world.getBlockState(pos).isAir()) {
-            world.setBlock(pos, Blocks.TORCH.defaultBlockState(), Block.UPDATE_CLIENTS);
-        }
+        RailTrackLayer.placeStationTorch(world, pos);
     }
 
     private void stockWaystationChest(ServerLevel world, BlockPos chestPos) {
@@ -495,71 +430,154 @@ public final class GlacierRailNetwork {
         repairCursorZ = limit;
     }
 
-    private void placeRepairRail(ServerLevel world, int x, int z) {
-        int surfaceY = world.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
-        BlockPos deckPos = new BlockPos(x, surfaceY - 1, z);
-        if (!world.getBlockState(deckPos).isSolid()) {
-            world.setBlock(deckPos, Blocks.COBBLESTONE.defaultBlockState(), Block.UPDATE_CLIENTS);
+    private void connectNearbyCityGates(ServerLevel world, int wallZ) {
+        if (railHeadZ == UNINITIALISED) return;
+        int startZ = Math.max(wallZ + IceWallConfig.CITY_MIN_DISTANCE_AHEAD,
+                railHeadZ - IceWallConfig.RAIL_CITY_SPUR_SCAN_BACK_BLOCKS);
+        int endZ = Math.min(railHeadZ - 8, wallZ + IceWallConfig.CITY_MAX_DISTANCE_AHEAD);
+        for (int z = startZ; z <= endZ; z += 16) {
+            CityAnchor anchor = nearestCityAnchor(world, railBaseX >> 4, z >> 4);
+            long cityKey = cityKey(anchor);
+            if (builtCitySpurs.contains(cityKey)) continue;
+
+            int cityCenterX = anchor.chunkX() * 16 + 8;
+            int cityCenterZ = anchor.chunkZ() * 16 + 8;
+            if (Math.abs(cityCenterZ - z) > 24) continue;
+            if (cityCenterZ <= wallZ + IceWallConfig.RAIL_CITY_SPUR_MIN_AHEAD_DISTANCE
+                    || cityCenterZ >= railHeadZ - 8) continue;
+
+            int mainX = desiredRailXForZ(cityCenterZ);
+            int gateOffset = IceWallConfig.CITY_RADIUS_CHUNKS * 16;
+            int gateX = cityCenterX + (mainX < cityCenterX ? -gateOffset : gateOffset);
+            int distance = Math.abs(mainX - gateX);
+            if (distance < 6 || distance > IceWallConfig.RAIL_CITY_SPUR_MAX_DISTANCE) continue;
+            if (!canBuildCitySpur(world, mainX, gateX, cityCenterZ)) continue;
+            if (findRailY(world, mainX, cityCenterZ) < 0) continue;
+
+            buildCitySpur(world, mainX, gateX, cityCenterZ, cityKey);
+            break;
         }
-        BlockPos railPos = deckPos.above();
+    }
+
+    private void buildCitySpur(ServerLevel world, int mainX, int gateX, int z, long cityKey) {
+        int step = gateX > mainX ? 1 : -1;
+        int previousY = findRailY(world, mainX, z);
+        for (int x = mainX + step; x != gateX + step; x += step) {
+            previousY = placeCitySpurRail(world, x, z, previousY, x == gateX);
+        }
+        buildCityGateStation(world, gateX, previousY, z, step);
+        builtCitySpurs.add(cityKey);
+
+        BlockPos stationPos = new BlockPos(gateX, previousY, z);
+        world.playSound(null, stationPos, SoundEvents.BELL_BLOCK, SoundSource.BLOCKS,
+                0.9f, 1.1f + rng.nextFloat() * 0.2f);
+        Component msg = Component.literal("Rail crew opened a city gate spur at Z=" + z)
+                .withStyle(ChatFormatting.AQUA, ChatFormatting.BOLD);
+        for (ServerPlayer player : world.players()) {
+            if (player.blockPosition().distManhattan(stationPos) <= IceWallConfig.RAIL_ANNOUNCEMENT_DISTANCE) {
+                player.connection.send(new ClientboundSetActionBarTextPacket(msg));
+            }
+        }
+    }
+
+    private int placeCitySpurRail(ServerLevel world, int x, int z, int previousY, boolean poweredStop) {
+        int surfaceY = world.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+        int railY = previousY == UNINITIALISED ? surfaceY : moveToward(previousY, surfaceY, 1);
+        BlockPos railPos = new BlockPos(x, railY, z);
+        BlockPos deckPos = railPos.below();
+        if (!world.getBlockState(deckPos).isSolid()) {
+            buildBridgeDeck(world, deckPos, surfaceY, true);
+        } else {
+            world.setBlock(deckPos, Blocks.OAK_PLANKS.defaultBlockState(), Block.UPDATE_CLIENTS);
+        }
         clearRailSpace(world, railPos);
-        world.setBlock(railPos, Blocks.RAIL.defaultBlockState(), Block.UPDATE_CLIENTS);
+        if (poweredStop) {
+            world.setBlock(deckPos, Blocks.REDSTONE_BLOCK.defaultBlockState(), Block.UPDATE_CLIENTS);
+            world.setBlock(railPos, Blocks.POWERED_RAIL.defaultBlockState()
+                    .setValue(PoweredRailBlock.POWERED, true), Block.UPDATE_CLIENTS);
+        } else {
+            world.setBlock(railPos, Blocks.RAIL.defaultBlockState(), Block.UPDATE_CLIENTS);
+        }
+        return railY;
+    }
+
+    private void buildCityGateStation(ServerLevel world, int gateX, int railY, int z, int outwardStep) {
+        int platformY = railY - 1;
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = -3; dz <= 3; dz++) {
+                BlockPos deck = new BlockPos(gateX + dx, platformY, z + dz);
+                placeStationDeck(world, deck);
+            }
+        }
+        for (int dz = -1; dz <= 1; dz++) {
+            BlockPos rail = new BlockPos(gateX + outwardStep, railY, z + dz);
+            placeStationDeck(world, rail.below());
+            clearRailSpace(world, rail);
+            world.setBlock(rail, Blocks.RAIL.defaultBlockState(), Block.UPDATE_CLIENTS);
+        }
+
+        BlockPos chestPos = new BlockPos(gateX, railY, z + 3);
+        world.setBlock(chestPos, Blocks.CHEST.defaultBlockState(), Block.UPDATE_CLIENTS);
+        stockCityGateChest(world, chestPos);
+        BlockPos bellPos = new BlockPos(gateX - outwardStep, railY + 1, z - 3);
+        world.setBlock(bellPos.below(), Blocks.OAK_FENCE.defaultBlockState(), Block.UPDATE_CLIENTS);
+        world.setBlock(bellPos, Blocks.BELL.defaultBlockState(), Block.UPDATE_CLIENTS);
+        placeStationTorch(world, new BlockPos(gateX - 2, railY, z - 2));
+        placeStationTorch(world, new BlockPos(gateX + 2, railY, z - 2));
+        spawnParkedStorageCart(world, gateX + outwardStep, railY, z);
+    }
+
+    private void stockCityGateChest(ServerLevel world, BlockPos chestPos) {
+        BlockEntity be = world.getBlockEntity(chestPos);
+        if (!(be instanceof BaseContainerBlockEntity chest)) return;
+        ItemStack[] goods = {
+                new ItemStack(Items.MINECART, 2),
+                new ItemStack(Items.CHEST_MINECART, 1),
+                new ItemStack(Items.RAIL, 32),
+                new ItemStack(Items.POWERED_RAIL, 8),
+                new ItemStack(Items.REDSTONE_TORCH, 8),
+                new ItemStack(Items.BREAD, 12),
+                new ItemStack(Items.COAL, 16),
+                new ItemStack(Items.BARREL, 4)
+        };
+        for (int i = 0; i < goods.length && i < chest.getContainerSize(); i++) {
+            chest.setItem(i, goods[i].copy());
+        }
+    }
+
+    private boolean canBuildCitySpur(ServerLevel world, int mainX, int gateX, int z) {
+        int step = gateX > mainX ? 1 : -1;
+        for (int x = mainX; x != gateX + step; x += step) {
+            if (world.getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) == null) return false;
+        }
+        return true;
+    }
+
+    private CityAnchor nearestCityAnchor(ServerLevel world, int chunkX, int chunkZ) {
+        return CityDomain.nearestAnchor(world, chunkX, chunkZ);
+    }
+
+    private long cityKey(CityAnchor anchor) {
+        return CityDomain.cityKey(anchor);
+    }
+
+    private void placeRepairRail(ServerLevel world, int x, int z) {
+        RailTrackLayer.placeRepairRail(world, x, z);
     }
 
     private int moveToward(int current, int target, int maxStep) {
-        if (current < target) return Math.min(current + maxStep, target);
-        if (current > target) return Math.max(current - maxStep, target);
-        return current;
+        return RailTrackLayer.moveToward(current, target, maxStep);
     }
 
     private void clearRailSpace(ServerLevel world, BlockPos railPos) {
-        BlockState existing = world.getBlockState(railPos);
-        if (existing.isAir()
-                || existing.getBlock() == Blocks.SNOW
-                || existing.getBlock() == Blocks.SHORT_GRASS
-                || existing.getBlock() == Blocks.TALL_GRASS) {
-            return;
-        }
-        world.setBlock(railPos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS);
+        RailTrackLayer.clearRailSpace(world, railPos);
     }
 
     private void buildBridgeDeck(ServerLevel world, BlockPos deckPos, int surfaceY, boolean connector) {
-        world.setBlock(deckPos, Blocks.OAK_PLANKS.defaultBlockState(), Block.UPDATE_CLIENTS);
-
-        // Handrails/edge planks make bridges read as deliberate structures.
-        if (!connector) {
-            placeBridgeEdge(world, deckPos.east());
-            placeBridgeEdge(world, deckPos.west());
-        } else {
-            placeBridgeEdge(world, deckPos.north());
-            placeBridgeEdge(world, deckPos.south());
-        }
-
-        int supportBottom = Math.max(world.getMinY(), surfaceY - 1);
-        for (int y = deckPos.getY() - 1; y >= supportBottom; y--) {
-            BlockPos support = new BlockPos(deckPos.getX(), y, deckPos.getZ());
-            if (world.getBlockState(support).isSolid()) break;
-            world.setBlock(support, Blocks.OAK_FENCE.defaultBlockState(), Block.UPDATE_CLIENTS);
-        }
+        RailTrackLayer.buildBridgeDeck(world, deckPos, surfaceY, connector);
     }
 
-    private void placeBridgeEdge(ServerLevel world, BlockPos pos) {
-        if (world.getBlockState(pos).isAir()) {
-            world.setBlock(pos, Blocks.OAK_SLAB.defaultBlockState(), Block.UPDATE_CLIENTS);
-        }
-    }
-
-    /**
-     * Scans downward from slightly above the surface to find a RAIL block at (x, z).
-     * Returns the Y coordinate of the rail, or -1 if none is found.
-     */
     private int findRailY(ServerLevel world, int x, int z) {
-        int topY = world.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z) + 2;
-        for (int y = topY; y >= world.getMinY(); y--) {
-            if (world.getBlockState(new BlockPos(x, y, z)).getBlock() == Blocks.RAIL) {
-                return y;
-            }
-        }
-        return -1;
+        return RailTrackLayer.findRailY(world, x, z);
     }
 }
