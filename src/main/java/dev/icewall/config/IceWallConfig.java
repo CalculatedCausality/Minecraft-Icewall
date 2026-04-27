@@ -224,6 +224,155 @@ public final class IceWallConfig {
     // Aurora borealis — notification range.
     public static final int AURORA_NOTIFY_RANGE = 512;
 
+    // -----------------------------------------------------------------------
+    // New systems (session 3)
+    // -----------------------------------------------------------------------
+
+    // Glacial whispers — atmospheric lore messages.
+    // Distance tiers (blocks ahead of wall).
+    public static final int WHISPER_DISTANCE_CRITICAL = 100;  // < this → tier 2 (dramatic subtitle)
+    public static final int WHISPER_DISTANCE_NEAR     = 300;  // < this → tier 1 (actionbar urgent)
+    // Minimum ticks between whispers per player per tier.
+    public static final int WHISPER_INTERVAL_CRITICAL = 100;
+    public static final int WHISPER_INTERVAL_NEAR     = 200;
+    public static final int WHISPER_INTERVAL_FAR      = 400;
+
+    // Animal panic — passive mobs flee northward within this distance.
+    public static final int ANIMAL_PANIC_DISTANCE = 100;
+
+    // Ice pillar bloom — dramatic eruption of tall ice columns.
+    // 1-in-N chance per tick to trigger a bloom.
+    public static final int ICE_BLOOM_CHANCE        = 200;
+    // Minimum blocks ahead of wall for the bloom cluster.
+    public static final int ICE_BLOOM_DIST_MIN      = 10;
+    // Random extra range added to minimum (actual = MIN + rand(RANGE)).
+    public static final int ICE_BLOOM_DIST_RANGE    = 50;
+    // Number of individual pillars in each bloom.
+    public static final int ICE_BLOOM_PILLARS       = 7;
+    // XZ spread radius of the pillar cluster.
+    public static final int ICE_BLOOM_SPREAD        = 8;
+    // Minimum pillar height.
+    public static final int ICE_BLOOM_HEIGHT_MIN    = 8;
+    // Random extra height (actual = MIN + rand(RANGE)).
+    public static final int ICE_BLOOM_HEIGHT_RANGE  = 10;
+
+    // Glass shatter — blocks ahead of wall within which glass shatters.
+    public static final int GLASS_SHATTER_DISTANCE = 30;
+
+    // -----------------------------------------------------------------------
+    // New systems (session 4)
+    // -----------------------------------------------------------------------
+
+    // Armor frost drain — durability lost per tick inside the hypothermia zone.
+    // Ticks between each drain event per player.
+    public static final int ARMOR_DRAIN_INTERVAL_TICKS = 200;
+    // Maximum durability points lost per drain event (at the wall face; scaled by closeness).
+    public static final int ARMOR_DRAIN_PER_TICK = 2;
+
+    // Portal sealing — scan / seal interval in ticks.
+    public static final int PORTAL_SCAN_INTERVAL_TICKS = 40;
+    // Blocks ahead of wall within which Nether portals are sealed.
+    public static final int PORTAL_SEAL_DISTANCE = 80;
+
+    // Stray hunting party — periodic Stray squad spawned at the wall face.
+    // Ticks between spawn events.
+    public static final int STRAY_SPAWN_INTERVAL_TICKS = 600;
+    // Strays per squad.
+    public static final int STRAY_PACK_SIZE = 4;
+    // Blocks ahead of wall within which players are considered valid hunt targets.
+    public static final int STRAY_HUNT_DISTANCE = 200;
+
+    // -----------------------------------------------------------------------
+    // New systems (session 5)
+    // -----------------------------------------------------------------------
+
+    // Item entity magnetism — dropped items pulled toward the wall.
+    // Ticks between pull pulses.
+    public static final int ITEM_MAGNET_INTERVAL_TICKS = 10;
+    // Blocks ahead of wall within which items are attracted.
+    public static final int ITEM_MAGNET_DISTANCE = 40;
+    // Base velocity added toward the wall per pulse (scales with proximity).
+    public static final double ITEM_MAGNET_STRENGTH = 0.12;
+
+    // Indoor icicle drop — FallingBlockEntity dripstone falling on sheltered players.
+    // Ticks between per-player icicle checks.
+    public static final int ICICLE_CHECK_INTERVAL_TICKS = 40;
+    // 1-in-N chance per check that an icicle is spawned.
+    public static final int ICICLE_CHANCE_DENOMINATOR = 6;
+    // How many blocks above the player to scan for a ceiling.
+    public static final int ICICLE_SCAN_HEIGHT = 10;
+    // Damage dealt per block fallen (FallingBlockEntity.setHurtsEntities param 1).
+    public static final float ICICLE_DAMAGE_PER_BLOCK = 0.5f;
+    // Max damage cap from a single icicle (param 2).
+    public static final int ICICLE_MAX_DAMAGE = 8;
+
+    // Cold snap hunger drain — saturation drained per HYPOTHERMIA check interval
+    // at maximum cold intensity (fraction 1.0 = right at the wall face).
+    public static final float COLD_SATURATION_DRAIN_MAX = 1.5f;
+
+    // Wolf flight — distance ahead of the wall within which tamed wolves flee.
+    public static final int WOLF_FLIGHT_DISTANCE = 80;
+
+    // Frozen chest reroll — how often to scan for chests in glaciated territory.
+    public static final int CHEST_REROLL_INTERVAL_TICKS = 800;
+    // How many blocks behind the wall face to scan for chests.
+    public static final int CHEST_REROLL_SCAN_DEPTH = 200;
+
+    // Survivor leaderboard — how often to broadcast the ranking (ticks).
+    public static final int LEADERBOARD_INTERVAL_TICKS = 6000; // ~5 minutes
+    // How many entries to show.
+    public static final int LEADERBOARD_MAX_ENTRIES = 5;
+
+    // -----------------------------------------------------------------------
+    // Rail network
+    // -----------------------------------------------------------------------
+
+    // Minimum blocks the rail head must stay ahead of the glacier face.
+    public static final int RAIL_MIN_AHEAD_DISTANCE = 40;
+    // Blocks of rail laid per scheduled extension event.
+    public static final int RAIL_EXTEND_BATCH_SIZE = 12;
+    // Ticks between scheduled extension pulses (~10 s).
+    public static final int RAIL_EXTEND_INTERVAL_TICKS = 200;
+    // Ticks between supply-cart dispatches (~2 min).
+    public static final int RAIL_MINECART_INTERVAL_TICKS = 2400;
+    // Blocks ahead of wall face where supply carts are placed.
+    public static final int RAIL_CART_SPAWN_OFFSET = 60;
+    // Ticks between worker crew checks (~30 s).
+    public static final int RAIL_WORKER_MANAGE_INTERVAL_TICKS = 600;
+    // Number of Rail Crew villagers to maintain near the construction head.
+    public static final int RAIL_WORKER_COUNT = 3;
+    // Maximum blocks a worker may stray from the head before being teleported back.
+    public static final int RAIL_WORKER_MAX_WANDER = 32;
+    // Player distance from wall (blocks) within which supply-cart announcements are sent.
+    public static final int RAIL_ANNOUNCEMENT_DISTANCE = 500;
+    // Maximum east/west drift of the generated rail route from its base X.
+    public static final int RAIL_MEANDER_AMPLITUDE = 14;
+    // Larger values make the route curve more gradually.
+    public static final int RAIL_MEANDER_WAVELENGTH = 42;
+    // Maximum natural height change before the rail crew builds bridge decking.
+    public static final int RAIL_MAX_NATURAL_GRADE = 2;
+    // Spacing between powered rail booster blocks.
+    public static final int RAIL_POWERED_INTERVAL_BLOCKS = 24;
+    // Distance between generated waystations along the rail route.
+    public static final int RAIL_STATION_INTERVAL_BLOCKS = 96;
+    // Length of each waystation storage siding, measured away from the main line.
+    public static final int RAIL_STATION_SIDING_LENGTH = 4;
+    // How often the rail crew scans existing track for broken/missing rail.
+    public static final int RAIL_REPAIR_INTERVAL_TICKS = 300;
+    // How many Z positions are checked per repair pass.
+    public static final int RAIL_REPAIR_BATCH_SIZE = 32;
+
+    // -----------------------------------------------------------------------
+    // Respawn safety
+    // -----------------------------------------------------------------------
+
+    // Minimum blocks ahead of the glacier wall that the world spawn and safe
+    // respawn teleport target must stay.  Also used as the threshold below which
+    // a player's individual bed/anchor spawn is considered consumed.
+    public static final int RESPAWN_SAFE_BUFFER = 30;
+    // How often to scan player respawn configs for consumed spawn points (ticks).
+    public static final int RESPAWN_SCAN_INTERVAL_TICKS = 400;
+
     private IceWallConfig() {
     }
 }

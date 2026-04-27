@@ -7,6 +7,7 @@ import java.util.Random;
 import java.util.UUID;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.ChatFormatting;
@@ -32,10 +33,12 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.storage.LevelData;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.phys.AABB;
 
 public final class IceWallAdvancer {
     private final HeatmapTracker heatmapTracker = new HeatmapTracker();
@@ -47,6 +50,8 @@ public final class IceWallAdvancer {
     private final GlacierMobEffects mobEffects = new GlacierMobEffects();
     private final VillagerCommunities villagerCommunities = new VillagerCommunities();
     private final NaturalDisasters naturalDisasters = new NaturalDisasters();
+    private final GlacialWhispers whispers = new GlacialWhispers();
+    private final GlacierRailNetwork railNetwork = new GlacierRailNetwork();
     private final Map<UUID, ServerBossEvent> bossBars = new HashMap<>();
     private final Map<UUID, Double> spectatorDriftX = new HashMap<>();
     private final Map<UUID, Map<Integer, FrostEntry>> frostEntries = new HashMap<>();
@@ -63,6 +68,28 @@ public final class IceWallAdvancer {
         });
         ServerTickEvents.END_SERVER_TICK.register(this::onEndTick);
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> removePlayer(handler.player));
+
+        // Respawn safety — if a player spawns inside or behind the glacier, move them to safety
+        ServerPlayerEvents.AFTER_RESPAWN.register((oldPlayer, newPlayer, isEndConquered) -> {
+            if (!(newPlayer.level() instanceof ServerLevel sl)) return;
+            if (!isManagedWorld(sl)) return;
+            ServerLevel overworld = sl;
+            IceWallState state = IceWallState.get(overworld);
+            if (!state.isActive()) return;
+            int wallZ = state.getWallFrontZ();
+            int playerZ = newPlayer.blockPosition().getZ();
+            // Player is inside or behind the glacier — teleport to safety
+            if (playerZ <= wallZ + IceWallConfig.RESPAWN_SAFE_BUFFER) {
+                int safeZ = wallZ + IceWallConfig.RESPAWN_SAFE_BUFFER + 5;
+                int surfaceY = overworld.getHeight(
+                        net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                        newPlayer.blockPosition().getX(), safeZ);
+                newPlayer.teleportTo(newPlayer.blockPosition().getX() + 0.5, surfaceY, safeZ + 0.5);
+                newPlayer.connection.send(new ClientboundSetActionBarTextPacket(
+                        Component.literal("❄ You have been moved away from the glacier zone.")
+                                .withStyle(ChatFormatting.AQUA)));
+            }
+        });
         // Ice toll — 15% chance of freeze damage when mining glacier blocks
         PlayerBlockBreakEvents.BEFORE.register((world, player, pos, blockState, blockEntity) -> {
             if (!(world instanceof ServerLevel sl)) return true;
@@ -88,6 +115,7 @@ public final class IceWallAdvancer {
         if (state.isActive() && state.advanceIfDue()) {
             placementQueue.enqueueLeadingEdge(world, state.getWallFrontZ(), state.getMinExploredX(), state.getMaxExploredX());
             preloadChunksAhead(world, state);
+            broadcastGlacierAdvance(world, state);
         }
 
         placementQueue.process(world);
@@ -98,10 +126,16 @@ public final class IceWallAdvancer {
         mobEffects.tick(world, state);
         villagerCommunities.tick(world, state);
         naturalDisasters.tick(world, state);
+        whispers.tick(world, state);
         tickCompassScramble(world, state);
         tickInventoryFrost(world, state);
         tickSupplyDrop(world, state);
         tickSpectatorDrift(world, state);
+        tickArmorDrain(world, state);
+        tickItemMagnetism(world, state);
+        tickSurvivorLeaderboard(world, state);
+        railNetwork.tick(world, state);
+        tickConsumedSpawnWarning(world, state);
         updatePlayers(world, state);
     }
 
@@ -407,5 +441,189 @@ public final class IceWallAdvancer {
     /** Expose the heatmap tracker for use by the /icewall heatmap command. */
     public HeatmapTracker getHeatmapTracker() {
         return heatmapTracker;
+    }
+
+    // -----------------------------------------------------------------------
+    // Glacier advance event — boom + subtitle broadcast when the wall steps
+    // -----------------------------------------------------------------------
+
+    private static final String[] ADVANCE_LINES = {
+        "The glacier advances.",
+        "Another metre consumed.",
+        "The ice presses forward.",
+        "There is no stopping it.",
+        "It grows closer.",
+    };
+
+    private void broadcastGlacierAdvance(ServerLevel world, IceWallState state) {
+        int wallZ = state.getWallFrontZ();
+        // Push world spawn to stay safely ahead of the glacier
+        pushWorldSpawn(world, state);
+        String line = ADVANCE_LINES[(int) (world.getGameTime() / state.getAdvanceIntervalTicks()
+                % ADVANCE_LINES.length)];
+        Component subtitle = Component.literal("❄ " + line)
+                .withStyle(ChatFormatting.DARK_AQUA, ChatFormatting.ITALIC);
+        for (ServerPlayer player : world.players()) {
+            if (player.isSpectator()) continue;
+            int dist = player.blockPosition().getZ() - wallZ;
+            // --- Global distant rumble (all living players, very quiet) ---
+            world.playSound(null, player.blockPosition(),
+                    SoundEvents.RAVAGER_STEP, SoundSource.AMBIENT, 0.18f, 0.18f);
+            if (dist <= 0 || dist > IceWallConfig.BLIZZARD_LOCK_DISTANCE) continue;
+            // Deep concussive boom — pitch drops as player gets closer
+            float pitch = 0.35f + (dist / (float) IceWallConfig.BLIZZARD_LOCK_DISTANCE) * 0.25f;
+            world.playSound(null, player.blockPosition(),
+                    SoundEvents.RAVAGER_STEP, SoundSource.AMBIENT, 1.6f, pitch);
+            // Subtitle (blank title so it doesn’t obscure screen)
+            player.connection.send(new ClientboundSetTitlesAnimationPacket(5, 50, 15));
+            player.connection.send(new ClientboundSetTitleTextPacket(Component.literal("")));
+            player.connection.send(new ClientboundSetSubtitleTextPacket(subtitle));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Armor frost drain — worn armor loses durability inside hypothermia zone
+    // -----------------------------------------------------------------------
+
+    private void tickArmorDrain(ServerLevel world, IceWallState state) {
+        if (!state.isActive()) return;
+        if (world.getGameTime() % IceWallConfig.ARMOR_DRAIN_INTERVAL_TICKS != 0L) return;
+        int wallZ = state.getWallFrontZ();
+        for (ServerPlayer player : world.players()) {
+            if (player.isSpectator()) continue;
+            int dist = player.blockPosition().getZ() - wallZ;
+            if (dist <= 0 || dist > IceWallConfig.HYPOTHERMIA_MAX_DISTANCE) continue;
+            // Pick a random equipped armor slot to damage
+            net.minecraft.world.entity.EquipmentSlot[] armorSlots = {
+                net.minecraft.world.entity.EquipmentSlot.HEAD,
+                net.minecraft.world.entity.EquipmentSlot.CHEST,
+                net.minecraft.world.entity.EquipmentSlot.LEGS,
+                net.minecraft.world.entity.EquipmentSlot.FEET
+            };
+            net.minecraft.world.entity.EquipmentSlot slot =
+                    armorSlots[rng.nextInt(armorSlots.length)];
+            ItemStack armor = player.getItemBySlot(slot);
+            if (armor.isEmpty() || !armor.isDamageableItem()) continue;
+            // Scale drain intensity with closeness
+            double fraction = 1.0 - (double) dist / IceWallConfig.HYPOTHERMIA_MAX_DISTANCE;
+            int damage = (int) Math.max(1, Math.round(IceWallConfig.ARMOR_DRAIN_PER_TICK * fraction));
+            armor.hurtAndBreak(damage, player, slot);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Item entity magnetism — dropped items slide toward the wall
+    // -----------------------------------------------------------------------
+
+    /**
+     * Every ITEM_MAGNET_INTERVAL_TICKS, collect all ItemEntity objects within
+     * ITEM_MAGNET_DISTANCE blocks ahead of the wall and add a negative-Z (toward wall)
+     * velocity pulse.  Creates the visual spectacle of all loose items sliding
+     * into the glacier as if sucked in by a vacuum.
+     */
+    private void tickItemMagnetism(ServerLevel world, IceWallState state) {
+        if (!state.isActive()) return;
+        if (world.getGameTime() % IceWallConfig.ITEM_MAGNET_INTERVAL_TICKS != 0L) return;
+        int wallZ = state.getWallFrontZ();
+        int minX  = state.getMinExploredX();
+        int maxX  = state.getMaxExploredX();
+        if (minX >= maxX) return;
+        AABB zone = new AABB(minX, world.getMinY(), wallZ,
+                maxX, world.getMaxY(), wallZ + IceWallConfig.ITEM_MAGNET_DISTANCE);
+        for (ItemEntity item : world.getEntitiesOfClass(ItemEntity.class, zone, e -> true)) {
+            double dist = item.getZ() - wallZ;
+            double fraction = 1.0 - (dist / IceWallConfig.ITEM_MAGNET_DISTANCE);
+            double pull = IceWallConfig.ITEM_MAGNET_STRENGTH * fraction;
+            item.setDeltaMovement(item.getDeltaMovement().add(0, 0, -pull));
+            item.hurtMarked = true;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Survivor leaderboard — periodic chat ranking of players furthest ahead
+    // -----------------------------------------------------------------------
+
+    /**
+     * Every LEADERBOARD_INTERVAL_TICKS, broadcasts a short ranking in chat
+     * showing each online player's distance ahead of the wall (or "consumed"
+     * if they're behind it).  Encourages competition among players.
+     */
+    private void tickSurvivorLeaderboard(ServerLevel world, IceWallState state) {
+        if (!state.isActive()) return;
+        if (world.getGameTime() % IceWallConfig.LEADERBOARD_INTERVAL_TICKS != 0L) return;
+        int wallZ = state.getWallFrontZ();
+        java.util.List<ServerPlayer> players = world.players().stream()
+                .filter(p -> !p.isSpectator())
+                .sorted(java.util.Comparator.comparingInt(p -> -(p.blockPosition().getZ() - wallZ)))
+                .toList();
+        if (players.isEmpty()) return;
+        // Build leaderboard lines
+        net.minecraft.network.chat.MutableComponent header = Component.literal("— ❄ Survivor Rankings ❄ —")
+                .withStyle(ChatFormatting.AQUA, ChatFormatting.BOLD);
+        world.players().forEach(p -> p.sendSystemMessage(header));
+        for (int rank = 0; rank < Math.min(players.size(), IceWallConfig.LEADERBOARD_MAX_ENTRIES); rank++) {
+            ServerPlayer p = players.get(rank);
+            int dist = p.blockPosition().getZ() - wallZ;
+            String distStr = dist >= 0
+                    ? "+" + dist + " blocks ahead"
+                    : "☠ consumed (" + Math.abs(dist) + " blocks behind)";
+            ChatFormatting colour = dist >= 200 ? ChatFormatting.GREEN
+                    : dist >= 50  ? ChatFormatting.YELLOW
+                    : dist >= 0   ? ChatFormatting.RED
+                    : ChatFormatting.DARK_RED;
+            String medal = rank == 0 ? "🥇 " : rank == 1 ? "🥈 " : rank == 2 ? "🥉 " : (rank + 1) + ". ";
+            net.minecraft.network.chat.MutableComponent line = Component.literal(
+                    medal + p.getScoreboardName() + " — " + distStr)
+                    .withStyle(colour);
+            world.players().forEach(viewer -> viewer.sendSystemMessage(line));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Respawn safety systems
+    // -----------------------------------------------------------------------
+
+    /**
+     * On each glacier advance, update the world-level respawn position to stay
+     * RESPAWN_SAFE_BUFFER blocks ahead of the wall.  This is the fallback spawn
+     * used by players who have no bed or respawn anchor, and by new players.
+     */
+    private void pushWorldSpawn(ServerLevel world, IceWallState state) {
+        int wallZ = state.getWallFrontZ();
+        int safeZ = wallZ + IceWallConfig.RESPAWN_SAFE_BUFFER;
+        // Use the world-centre X as the anchor
+        int centreX = (state.getMinExploredX() + state.getMaxExploredX()) / 2;
+        int surfaceY = world.getHeight(
+                net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                centreX, safeZ);
+        BlockPos safePos = new BlockPos(centreX, surfaceY, safeZ);
+        world.setRespawnData(LevelData.RespawnData.of(Level.OVERWORLD, safePos, 0.0f, 0.0f));
+    }
+
+    /**
+     * Every RESPAWN_SCAN_INTERVAL_TICKS, checks each player's individual respawn
+     * config (bed or respawn anchor).  If their set spawn is now behind or at the
+     * glacier face, clear it and notify them so they use the world spawn instead.
+     */
+    private void tickConsumedSpawnWarning(ServerLevel world, IceWallState state) {
+        if (!state.isActive()) return;
+        if (world.getGameTime() % IceWallConfig.RESPAWN_SCAN_INTERVAL_TICKS != 0L) return;
+        int wallZ = state.getWallFrontZ();
+        for (ServerPlayer player : world.players()) {
+            if (player.isSpectator()) continue;
+            var config = player.getRespawnConfig();
+            if (config == null) continue;
+            var data = config.respawnData();
+            // Only concern ourselves with Overworld spawns
+            if (!Level.OVERWORLD.equals(data.dimension())) continue;
+            int spawnZ = data.pos().getZ();
+            if (spawnZ <= wallZ + IceWallConfig.RESPAWN_SAFE_BUFFER) {
+                // Clear the individual spawn — player falls back to world spawn
+                player.setRespawnPosition(null, false);
+                player.connection.send(new ClientboundSetActionBarTextPacket(
+                        Component.literal("⚠ Your respawn point was consumed by the glacier!")
+                                .withStyle(ChatFormatting.RED, ChatFormatting.BOLD)));
+            }
+        }
     }
 }

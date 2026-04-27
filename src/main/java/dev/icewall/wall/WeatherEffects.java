@@ -8,10 +8,13 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -34,6 +37,8 @@ import net.minecraft.world.phys.AABB;
  *   7.  Temperature HUD   — cosmetic °C actionbar readout scaling with proximity
  *   8.  Freeze heartbeat  — Freezing effect ticks sent without damage at <20 blocks
  *   9.  Frostbite scar    — Weakness I for 3 min applied on kill (called externally)
+ *  10.  Frost footsteps   — snow layers form under players moving in the blizzard zone
+ *  11.  Indoor icicle drop — FallingBlockEntity dripstone drops on sheltered players
  */
 public final class WeatherEffects {
 
@@ -41,6 +46,7 @@ public final class WeatherEffects {
     private boolean blizzardActive = false;
     private boolean lightRainActive = false;
     private final java.util.Set<Long> flashFrozenChunks = new java.util.HashSet<>();
+    private final java.util.Map<java.util.UUID, net.minecraft.core.BlockPos> lastFootstepPos = new java.util.HashMap<>();
 
     public void tick(ServerLevel world, IceWallState state) {
         if (!state.isActive()) {
@@ -68,6 +74,7 @@ public final class WeatherEffects {
             tickWindPush(player, dist);
             tickTemperatureHud(world, player, dist);
             tickFreezeHeartbeat(player, dist);
+            tickFrostFootstep(world, player, dist);
         }
 
         if (anyClose) {
@@ -81,6 +88,7 @@ public final class WeatherEffects {
         tickLightning(world, state);
         tickSnowdrift(world, state);
         tickFlashFreeze(world, state);
+        tickIndoorIcicle(world, state);
     }
 
     // -----------------------------------------------------------------------
@@ -317,5 +325,93 @@ public final class WeatherEffects {
     public void applyFrostbiteScar(ServerPlayer player) {
         player.addEffect(new MobEffectInstance(
                 MobEffects.WEAKNESS, IceWallConfig.FROSTBITE_DURATION_TICKS, 0, false, true));
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. Frost footsteps — snow layers form under moving players in blizzard zone
+    // -----------------------------------------------------------------------
+
+    /**
+     * When a player is within BLIZZARD_LOCK_DISTANCE and has moved ≥2 blocks since the
+     * last recorded position, a snow layer is placed at the block they just stepped off.
+     * The footsteps create a visible trail of frost that accumulates as the player moves.
+     */
+    private void tickFrostFootstep(ServerLevel world, ServerPlayer player, int dist) {
+        if (dist > IceWallConfig.BLIZZARD_LOCK_DISTANCE) return;
+        BlockPos current = player.blockPosition();
+        BlockPos last = lastFootstepPos.get(player.getUUID());
+        if (last == null) {
+            lastFootstepPos.put(player.getUUID(), current);
+            return;
+        }
+        int dx = current.getX() - last.getX();
+        int dz = current.getZ() - last.getZ();
+        if (dx * dx + dz * dz < 4) return; // must move ≥2 blocks
+        // Place frost at the old position (one below current if on ground)
+        BlockPos frostPos;
+        if (player.onGround()) {
+            int surfaceY = world.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, last.getX(), last.getZ());
+            frostPos = new BlockPos(last.getX(), surfaceY, last.getZ());
+        } else {
+            frostPos = last;
+        }
+        if (world.getChunk(frostPos.getX() >> 4, frostPos.getZ() >> 4,
+                net.minecraft.world.level.chunk.status.ChunkStatus.FULL, false) == null) {
+            lastFootstepPos.put(player.getUUID(), current);
+            return;
+        }
+        BlockState below = world.getBlockState(frostPos.below());
+        if (world.getBlockState(frostPos).isAir() && below.isSolid()) {
+            world.setBlock(frostPos, Blocks.SNOW.defaultBlockState(),
+                    net.minecraft.world.level.block.Block.UPDATE_CLIENTS);
+        }
+        lastFootstepPos.put(player.getUUID(), current);
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. Indoor icicle drop — FallingBlockEntity dripstone targets sheltered players
+    // -----------------------------------------------------------------------
+
+    /**
+     * For each player in the blizzard zone, if they are indoors (solid block within
+     * ICICLE_SCAN_HEIGHT blocks directly above), there is a 1-in-N chance per tick
+     * to spawn a FallingBlockEntity of pointed dripstone at the ceiling that falls
+     * toward them.  The block damages them on landing and creates dramatic cracking
+     * sounds overhead.
+     */
+    private void tickIndoorIcicle(ServerLevel world, IceWallState state) {
+        if (!state.isActive()) return;
+        if (world.getGameTime() % IceWallConfig.ICICLE_CHECK_INTERVAL_TICKS != 0L) return;
+        int wallZ = state.getWallFrontZ();
+        for (ServerPlayer player : world.players()) {
+            if (player.isSpectator()) continue;
+            int dist = player.blockPosition().getZ() - wallZ;
+            if (dist <= 0 || dist > IceWallConfig.BLIZZARD_LOCK_DISTANCE) continue;
+            if (rng.nextInt(IceWallConfig.ICICLE_CHANCE_DENOMINATOR) != 0) continue;
+            // Find a solid ceiling within scan range
+            BlockPos playerPos = player.blockPosition();
+            int ceilingY = -1;
+            for (int dy = 1; dy <= IceWallConfig.ICICLE_SCAN_HEIGHT; dy++) {
+                BlockPos above = playerPos.above(dy);
+                if (world.getBlockState(above).isSolid()) {
+                    ceilingY = playerPos.getY() + dy;
+                    break;
+                }
+            }
+            if (ceilingY < 0) continue; // outdoors — no icicle
+            // Spawn a falling pointed-dripstone 1 block below the ceiling
+            BlockPos spawnPos = new BlockPos(playerPos.getX(), ceilingY - 1, playerPos.getZ());
+            if (!world.getBlockState(spawnPos).isAir()) continue;
+            FallingBlockEntity icicle = FallingBlockEntity.fall(
+                    world, spawnPos,
+                    net.minecraft.world.level.block.Blocks.POINTED_DRIPSTONE.defaultBlockState()
+                            .setValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.VERTICAL_DIRECTION,
+                                    net.minecraft.core.Direction.DOWN));
+            icicle.dropItem = false; // don’t leave a dripstone item on the floor
+            icicle.setHurtsEntities(IceWallConfig.ICICLE_DAMAGE_PER_BLOCK, IceWallConfig.ICICLE_MAX_DAMAGE);
+            world.addFreshEntity(icicle);
+            world.playSound(null, spawnPos, SoundEvents.POINTED_DRIPSTONE_DRIP_LAVA,
+                    SoundSource.BLOCKS, 1.0f, 0.8f + rng.nextFloat() * 0.3f);
+        }
     }
 }

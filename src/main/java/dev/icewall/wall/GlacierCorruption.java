@@ -5,10 +5,19 @@ import java.util.HashSet;
 import java.util.Random;
 import java.util.Set;
 import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.entity.BaseContainerBlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -61,6 +70,26 @@ public final class GlacierCorruption {
         if (rng.nextInt(40) == 0) tryFissure(world, wallZ, minX, maxX);
         if (rng.nextInt(20) == 0) tryIceSpike(world, wallZ, minX, maxX);
         if (rng.nextInt(200) == 0) scanForTreasure(world, wallZ, minX, maxX);
+
+        // Ice pillar bloom — a dramatic cluster of tall blue-ice columns erupts forward
+        if (rng.nextInt(IceWallConfig.ICE_BLOOM_CHANCE) == 0) {
+            triggerIcePillarBloom(world, wallZ, minX, maxX);
+        }
+
+        // Glass shatter — windows and panes near the wall crack and fall
+        if (world.getGameTime() % 30L == 0L && rng.nextInt(2) == 0) {
+            tickGlassShatter(world, wallZ, minX, maxX);
+        }
+
+        // Portal sealing — active Nether portals are frozen shut
+        if (world.getGameTime() % IceWallConfig.PORTAL_SCAN_INTERVAL_TICKS == 0L) {
+            sealNetherPortals(world, wallZ, minX, maxX);
+        }
+
+        // Frozen chest reroll — chests inside the glacier zone are restocked with survival loot
+        if (world.getGameTime() % IceWallConfig.CHEST_REROLL_INTERVAL_TICKS == 0L) {
+            tickFrozenChestReroll(world, wallZ, minX, maxX);
+        }
 
         // --- Pass 1: terrain band ---
         int width = maxX - minX + 1;
@@ -125,6 +154,15 @@ public final class GlacierCorruption {
             // Surface is standing water or lava — freeze it solid
             world.setBlock(pos, Blocks.ICE.defaultBlockState(), Block.UPDATE_CLIENTS);
 
+        } else if (isFarmland(surface) && distAhead < IceWallConfig.CORRUPTION_KILL_VEGETATION_DISTANCE) {
+            // Farmland freezes solid: rich soil → coarse dirt
+            world.setBlock(pos, Blocks.COARSE_DIRT.defaultBlockState(), Block.UPDATE_CLIENTS);
+
+        } else if (isCrop(surface) && distAhead < IceWallConfig.CORRUPTION_KILL_VEGETATION_DISTANCE) {
+            // Crop flash-frozen: replace with dead bush for visual
+            world.setBlock(pos, Blocks.DEAD_BUSH.defaultBlockState(),
+                    Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+
         } else if (isVegetation(surface) && distAhead < IceWallConfig.CORRUPTION_KILL_VEGETATION_DISTANCE) {
             // Aggressive zone: frost kills surface plants.
             // Suppress drops so dead vegetation doesn't litter the ground.
@@ -154,6 +192,29 @@ public final class GlacierCorruption {
         return !state.isSolid()
             && !state.isAir()
             && state.getFluidState().isEmpty();
+    }
+
+    /** Returns true for farmland blocks. */
+    private static boolean isFarmland(BlockState state) {
+        return state.getBlock() == Blocks.FARMLAND;
+    }
+
+    /**
+     * Returns true for planted crops (wheat, carrots, potatoes, beetroot, melon/pumpkin
+     * stems, nether wart, sweet berry bush).
+     */
+    private static boolean isCrop(BlockState state) {
+        Block b = state.getBlock();
+        return b == Blocks.WHEAT
+                || b == Blocks.CARROTS
+                || b == Blocks.POTATOES
+                || b == Blocks.BEETROOTS
+                || b == Blocks.MELON_STEM
+                || b == Blocks.PUMPKIN_STEM
+                || b == Blocks.NETHER_WART
+                || b == Blocks.SWEET_BERRY_BUSH
+                || b == Blocks.TORCHFLOWER_CROP
+                || b == Blocks.PITCHER_CROP;
     }
 
     /**
@@ -331,5 +392,213 @@ public final class GlacierCorruption {
             if (dx * dx + dz * dz <= r2) return true;
         }
         return false;
+    }
+
+    // -----------------------------------------------------------------------
+    // Ice pillar bloom — dramatic cluster of tall blue-ice columns erupts forward
+    // -----------------------------------------------------------------------
+
+    /**
+     * Spawns a burst of ICE_BLOOM_PILLARS tall blue-ice / packed-ice columns in a
+     * cluster ahead of the wall.  The columns vary in height so the formation looks
+     * organic rather than uniform.
+     */
+    private void triggerIcePillarBloom(ServerLevel world, int wallZ, int minX, int maxX) {
+        if (minX >= maxX) return;
+        int clusterX = minX + rng.nextInt(maxX - minX);
+        int clusterZ = wallZ + IceWallConfig.ICE_BLOOM_DIST_MIN
+                + rng.nextInt(IceWallConfig.ICE_BLOOM_DIST_RANGE);
+
+        for (int p = 0; p < IceWallConfig.ICE_BLOOM_PILLARS; p++) {
+            int ox = clusterX + rng.nextInt(IceWallConfig.ICE_BLOOM_SPREAD * 2 + 1) - IceWallConfig.ICE_BLOOM_SPREAD;
+            int oz = clusterZ + rng.nextInt(IceWallConfig.ICE_BLOOM_SPREAD * 2 + 1) - IceWallConfig.ICE_BLOOM_SPREAD;
+            if (world.getChunk(ox >> 4, oz >> 4, ChunkStatus.FULL, false) == null) continue;
+            int surfaceY = world.getHeight(Heightmap.Types.WORLD_SURFACE, ox, oz);
+            int height = IceWallConfig.ICE_BLOOM_HEIGHT_MIN
+                    + rng.nextInt(IceWallConfig.ICE_BLOOM_HEIGHT_RANGE);
+            // Alternate blue ice and packed ice for visual interest
+            BlockState pillarBlock = (p % 3 == 0)
+                    ? Blocks.BLUE_ICE.defaultBlockState()
+                    : Blocks.PACKED_ICE.defaultBlockState();
+            for (int dy = 0; dy < height; dy++) {
+                BlockPos pos = new BlockPos(ox, surfaceY + dy, oz);
+                BlockState existing = world.getBlockState(pos);
+                if (!existing.isAir() && !existing.canBeReplaced()) break;
+                world.setBlock(pos, pillarBlock, Block.UPDATE_CLIENTS);
+            }
+        }
+        // Play an ice-crack groan at the cluster centre
+        world.playSound(null, new BlockPos(clusterX, 64, clusterZ),
+                SoundEvents.GLASS_BREAK, SoundSource.BLOCKS, 2.0f,
+                0.3f + rng.nextFloat() * 0.2f);
+    }
+
+    // -----------------------------------------------------------------------
+    // Glass shatter — structural glass cracks under the glacier's cold pressure
+    // -----------------------------------------------------------------------
+
+    /**
+     * Randomly removes glass blocks / panes within the close corruption zone,
+     * simulating the thermal contraction and shattering of glass as the glacier
+     * approaches.
+     */
+    private void tickGlassShatter(ServerLevel world, int wallZ, int minX, int maxX) {
+        if (minX >= maxX) return;
+        int width = maxX - minX + 1;
+        int samples = 6;
+        for (int i = 0; i < samples; i++) {
+            int x = minX + rng.nextInt(width);
+            int z = wallZ + rng.nextInt(IceWallConfig.GLASS_SHATTER_DISTANCE);
+            if (world.getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) == null) continue;
+            int surfaceY = world.getHeight(Heightmap.Types.WORLD_SURFACE, x, z);
+            // Scan a vertical column for glass
+            for (int y = world.getMinY(); y <= surfaceY + 16; y++) {
+                BlockPos pos = new BlockPos(x, y, z);
+                BlockState bs = world.getBlockState(pos);
+                if (isGlass(bs)) {
+                    world.removeBlock(pos, false);
+                    world.playSound(null, pos, SoundEvents.GLASS_BREAK,
+                            SoundSource.BLOCKS, 0.8f + rng.nextFloat() * 0.4f,
+                            1.0f + rng.nextFloat() * 0.5f);
+                    break; // one shatter per column per tick pass
+                }
+            }
+        }
+    }
+
+    private static boolean isGlass(BlockState state) {
+        Block b = state.getBlock();
+        return b == Blocks.GLASS
+                || b == Blocks.GLASS_PANE
+                || b == Blocks.TINTED_GLASS
+                // check stained glass via block name (no static tag constant in 26.1.2)
+                || b.getDescriptionId().contains("stained_glass");
+    }
+
+    // -----------------------------------------------------------------------
+    // Portal sealing — Nether portals frozen shut by the glacier
+    // -----------------------------------------------------------------------
+
+    /**
+     * Scans for NETHER_PORTAL blocks within PORTAL_SEAL_DISTANCE ahead of the wall
+     * and removes them (leaving the obsidian frame).  Each sealed portal sends a
+     * “Escape route sealed” actionbar message to all players within 80 blocks.
+     */
+    private void sealNetherPortals(ServerLevel world, int wallZ, int minX, int maxX) {
+        if (minX >= maxX) return;
+        int width = maxX - minX + 1;
+        int samples = 12;
+        for (int i = 0; i < samples; i++) {
+            int x = minX + rng.nextInt(width);
+            int z = wallZ + rng.nextInt(IceWallConfig.PORTAL_SEAL_DISTANCE);
+            if (world.getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) == null) continue;
+            int surfaceY = world.getHeight(Heightmap.Types.WORLD_SURFACE, x, z);
+            // Scan vertical column for a portal block
+            for (int y = world.getMinY(); y <= surfaceY + 16; y++) {
+                BlockPos pos = new BlockPos(x, y, z);
+                if (world.getBlockState(pos).getBlock() != Blocks.NETHER_PORTAL) continue;
+                // Found a portal — flood-fill to remove all contiguous portal blocks
+                sealPortalCluster(world, pos);
+                // Notify nearby players
+                BlockPos epicentre = pos;
+                world.players().forEach(player -> {
+                    if (player.blockPosition().distSqr(epicentre) < 80.0 * 80.0) {
+                        player.connection.send(new ClientboundSetActionBarTextPacket(
+                                Component.literal("❎ Escape route sealed by the glacier.❎")
+                                        .withStyle(net.minecraft.ChatFormatting.DARK_RED,
+                                                net.minecraft.ChatFormatting.BOLD)));
+                    }
+                });
+                world.playSound(null, pos, SoundEvents.BEACON_DEACTIVATE,
+                        SoundSource.BLOCKS, 1.5f, 0.5f);
+                break; // one portal sealed per column per scan pass
+            }
+        }
+    }
+
+    private void sealPortalCluster(ServerLevel world, BlockPos start) {
+        // BFS removal of connected NETHER_PORTAL blocks (usually a 2x3 or 4x5 frame)
+        java.util.Deque<BlockPos> queue = new java.util.ArrayDeque<>();
+        Set<BlockPos> visited = new java.util.HashSet<>();
+        queue.add(start);
+        visited.add(start);
+        while (!queue.isEmpty()) {
+            BlockPos cur = queue.poll();
+            if (world.getBlockState(cur).getBlock() != Blocks.NETHER_PORTAL) continue;
+            world.setBlock(cur, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS);
+            for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values()) {
+                BlockPos next = cur.relative(dir);
+                if (!visited.contains(next)
+                        && world.getBlockState(next).getBlock() == Blocks.NETHER_PORTAL) {
+                    visited.add(next);
+                    queue.add(next);
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Frozen chest loot reroll
+    // -----------------------------------------------------------------------
+
+    /**
+     * Survivor loot table: a curated set of survival items placed in chests that
+     * the glacier has already passed over.  This rewards players who dare raid
+     * the frozen zone, and adds narrative weight ("someone left this behind").
+     */
+    private static final ItemStack[] GLACIER_LOOT = {
+            new ItemStack(Items.PACKED_ICE, 4),
+            new ItemStack(Items.BREAD, 6),
+            new ItemStack(Items.COOKED_BEEF, 4),
+            new ItemStack(Items.LEATHER_HELMET),
+            new ItemStack(Items.LEATHER_CHESTPLATE),
+            new ItemStack(Items.IRON_SWORD),
+            new ItemStack(Items.TORCH, 16),
+            new ItemStack(Items.FLINT_AND_STEEL),
+            new ItemStack(Items.SNOWBALL, 16),
+            new ItemStack(Items.COAL, 8),
+            new ItemStack(Items.ARROW, 12),
+            new ItemStack(Items.BOW),
+    };
+
+    /** Set of chest positions we have already rerolled so we don't revisit them. */
+    private final Set<BlockPos> rerolledChests = new HashSet<>();
+
+    private void tickFrozenChestReroll(ServerLevel world, int wallZ, int minX, int maxX) {
+        if (minX >= maxX) return;
+        // Sample random positions BEHIND the wall (already glaciated)
+        int width = maxX - minX + 1;
+        int samples = 6;
+        for (int i = 0; i < samples; i++) {
+            int x = minX + rng.nextInt(width);
+            // z is behind the wall face (negative offset = consumed territory)
+            int z = wallZ - 1 - rng.nextInt(IceWallConfig.CHEST_REROLL_SCAN_DEPTH);
+            if (world.getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) == null) continue;
+            int surfaceY = world.getHeight(Heightmap.Types.WORLD_SURFACE, x, z);
+            for (int y = surfaceY + 8; y >= world.getMinY(); y--) {
+                BlockPos pos = new BlockPos(x, y, z);
+                if (rerolledChests.contains(pos)) break; // already done this column
+                BlockState bs = world.getBlockState(pos);
+                if (bs.getBlock() instanceof ChestBlock) {
+                    BlockEntity be = world.getBlockEntity(pos);
+                    if (be instanceof BaseContainerBlockEntity container) {
+                        container.clearContent();
+                        // Place 4-7 random items from the loot table
+                        int count = 4 + rng.nextInt(4);
+                        java.util.List<Integer> slots = new java.util.ArrayList<>();
+                        for (int s = 0; s < container.getContainerSize(); s++) slots.add(s);
+                        java.util.Collections.shuffle(slots, rng);
+                        for (int j = 0; j < count && j < slots.size(); j++) {
+                            ItemStack loot = GLACIER_LOOT[rng.nextInt(GLACIER_LOOT.length)].copy();
+                            container.setItem(slots.get(j), loot);
+                        }
+                        rerolledChests.add(pos);
+                        world.playSound(null, pos, SoundEvents.CHEST_CLOSE,
+                                SoundSource.BLOCKS, 0.8f, 0.6f + rng.nextFloat() * 0.2f);
+                    }
+                    break;
+                }
+            }
+        }
     }
 }

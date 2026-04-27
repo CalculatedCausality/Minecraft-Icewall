@@ -8,6 +8,8 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.ambient.Bat;
+import net.minecraft.world.entity.animal.Animal;
+import net.minecraft.world.entity.animal.wolf.Wolf;
 import net.minecraft.world.entity.animal.chicken.Chicken;
 import net.minecraft.world.entity.animal.cow.Cow;
 import net.minecraft.world.entity.animal.pig.Pig;
@@ -20,6 +22,10 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.phys.AABB;
 
 /**
  * Handles mob-related glacier effects:
@@ -28,7 +34,7 @@ import net.minecraft.world.level.levelgen.Heightmap;
  *  2. Frozen mob statues    — rare: mob encased in packed ice (removed, cube left)
  *  3. Bat swarm flush       — bats spawn and flee south when wall enters a chunk
  *  4. Tree snap             — log tops break and drop in the aggressive zone
- *  5. Snowdrift accumulation behind the wall (handled in WeatherEffects; trees here only)
+ *  5. Animal panic          — passive animals flee northward en masse
  */
 public final class GlacierMobEffects {
 
@@ -47,6 +53,21 @@ public final class GlacierMobEffects {
         // Bat flush on a slower cadence
         if (gameTime % 100L == 0L) {
             tickBatFlush(world, state);
+        }
+
+        // Animal panic every 10 ticks — passive mobs flee the wall
+        if (gameTime % 10L == 0L) {
+            tickAnimalPanic(world, state);
+        }
+
+        // Stray hunting party — spawn a squad of Strays that hunt surviving players
+        if (gameTime % IceWallConfig.STRAY_SPAWN_INTERVAL_TICKS == 0L) {
+            tickStrayHuntingParty(world, state);
+        }
+
+        // Wolf flight — tamed wolves flee the wall every 20 ticks
+        if (gameTime % 20L == 0L) {
+            tickWolfFlight(world, state);
         }
     }
 
@@ -194,5 +215,142 @@ public final class GlacierMobEffects {
 
     private static boolean isLog(BlockState state) {
         return state.is(net.minecraft.tags.BlockTags.LOGS);
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. Animal panic — passive mobs flee away from the advancing wall
+    // -----------------------------------------------------------------------
+
+    /**
+     * Every 10 ticks, any passive animal within ANIMAL_PANIC_DISTANCE of the wall
+     * receives a positive-Z (northward / away from wall) velocity nudge that scales
+     * with closeness.  This creates the spectacle of stampeding wildlife ahead of
+     * the glacier without any AI modification.
+     */
+    private void tickAnimalPanic(ServerLevel world, IceWallState state) {
+        int wallZ = state.getWallFrontZ();
+        int minX  = state.getMinExploredX();
+        int maxX  = state.getMaxExploredX();
+        if (minX >= maxX) return;
+
+        AABB zone = new AABB(
+                minX, world.getMinY(), wallZ,
+                maxX, world.getMaxY(), wallZ + IceWallConfig.ANIMAL_PANIC_DISTANCE);
+
+        List<Animal> animals = world.getEntitiesOfClass(Animal.class, zone,
+                e -> !e.isSpectator());
+
+        for (Animal animal : animals) {
+            if (rng.nextInt(3) != 0) continue; // stagger to avoid all animals moving identically
+
+            int dist = (int)(animal.getZ() - wallZ);
+            double fraction = 1.0 - (double) dist / IceWallConfig.ANIMAL_PANIC_DISTANCE;
+            fraction = Math.max(0.05, fraction);
+
+            // Boost Z velocity (positive Z = away from wall) with a small random X spread
+            net.minecraft.world.phys.Vec3 motion = animal.getDeltaMovement();
+            double pushZ = 0.28 * fraction;
+            double pushX = (rng.nextDouble() - 0.5) * 0.12 * fraction;
+            double pushY = animal.onGround() ? 0.22 * fraction : 0.0;
+            animal.setDeltaMovement(motion.x + pushX, motion.y + pushY, motion.z + pushZ);
+            animal.hurtMarked = true; // flag for client movement sync
+
+            // Very close animals get a panic sound
+            if (dist < 20 && rng.nextInt(8) == 0) {
+                world.playSound(null, animal.blockPosition(),
+                        SoundEvents.GLASS_BREAK, SoundSource.AMBIENT,
+                        0.3f, 1.8f + rng.nextFloat() * 0.4f);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Stray hunting party
+    // -----------------------------------------------------------------------
+
+    /**
+     * Periodically spawns STRAY_PACK_SIZE Strays at the glacier’s leading edge.
+     * They spawn slightly behind the wall face (so the wall has already
+     * consumed their spawn chunk) and spread out to hunt any survivors ahead.
+     * A brief actionbar warning is sent to all nearby players.
+     */
+    private void tickStrayHuntingParty(ServerLevel world, IceWallState state) {
+        int wallZ = state.getWallFrontZ();
+        int minX  = state.getMinExploredX();
+        int maxX  = state.getMaxExploredX();
+        if (minX >= maxX) return;
+
+        // Check there is at least one live player within range to hunt
+        boolean hasTarget = world.players().stream().anyMatch(p -> {
+            if (p.isSpectator()) return false;
+            int dist = p.blockPosition().getZ() - wallZ;
+            return dist > 0 && dist <= IceWallConfig.STRAY_HUNT_DISTANCE;
+        });
+        if (!hasTarget) return;
+
+        int spawned = 0;
+        for (int attempt = 0; attempt < IceWallConfig.STRAY_PACK_SIZE * 3 && spawned < IceWallConfig.STRAY_PACK_SIZE; attempt++) {
+            int x = minX + rng.nextInt(maxX - minX + 1);
+            // Spawn at the wall face — just ahead so they walk into the player’s space
+            int z = wallZ + 1 + rng.nextInt(8);
+            if (world.getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) == null) continue;
+            int surfaceY = world.getHeight(Heightmap.Types.WORLD_SURFACE, x, z);
+            Stray stray = EntityType.STRAY.create(world, EntitySpawnReason.NATURAL);
+            if (stray == null) continue;
+            stray.teleportTo(x + 0.5, (double) surfaceY, z + 0.5);
+            world.addFreshEntity(stray);
+            spawned++;
+        }
+
+        if (spawned > 0) {
+            // Warn nearby players
+            BlockPos wallMid = new BlockPos((minX + maxX) / 2, 64, wallZ);
+            for (ServerPlayer player : world.players()) {
+                if (player.isSpectator()) continue;
+                int dist = player.blockPosition().getZ() - wallZ;
+                if (dist <= 0 || dist > IceWallConfig.STRAY_HUNT_DISTANCE) continue;
+                player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket(
+                        net.minecraft.network.chat.Component.literal(
+                                "❄ ⚠ Cold hunters emerge from the glacier — "
+                                + spawned + " strays!")
+                                .withStyle(net.minecraft.ChatFormatting.AQUA)));
+            }
+            world.playSound(null, wallMid, SoundEvents.STRAY_AMBIENT,
+                    SoundSource.HOSTILE, 1.5f, 0.7f + rng.nextFloat() * 0.2f);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. Wolf / dog flight — tamed wolves panic and run from the wall
+    // -----------------------------------------------------------------------
+
+    /**
+     * Wolves within WOLF_FLIGHT_DISTANCE of the wall receive a southward velocity
+     * boost every 20 ticks, proportional to closeness.  Very close wolves also
+     * produce a whimper to signal to their owner.
+     */
+    private void tickWolfFlight(ServerLevel world, IceWallState state) {
+        int wallZ = state.getWallFrontZ();
+        int minX  = state.getMinExploredX();
+        int maxX  = state.getMaxExploredX();
+        if (minX >= maxX) return;
+        AABB zone = new AABB(minX, world.getMinY(), wallZ,
+                maxX, world.getMaxY(), wallZ + IceWallConfig.WOLF_FLIGHT_DISTANCE);
+        for (Wolf wolf : world.getEntitiesOfClass(Wolf.class, zone, e -> !e.isSpectator())) {
+            int dist = (int)(wolf.getZ() - wallZ);
+            double fraction = 1.0 - (double) dist / IceWallConfig.WOLF_FLIGHT_DISTANCE;
+            fraction = Math.max(0.05, fraction);
+            net.minecraft.world.phys.Vec3 motion = wolf.getDeltaMovement();
+            wolf.setDeltaMovement(
+                    motion.x + (rng.nextDouble() - 0.5) * 0.1 * fraction,
+                    motion.y + (wolf.onGround() ? 0.3 * fraction : 0.0),
+                    motion.z + 0.35 * fraction);
+            wolf.hurtMarked = true;
+            if (dist < 20 && rng.nextInt(4) == 0) {
+                world.playSound(null, wolf.blockPosition(),
+                        SoundEvents.WARDEN_SNIFF, SoundSource.NEUTRAL,
+                        0.5f, 1.8f + rng.nextFloat() * 0.3f);
+            }
+        }
     }
 }
