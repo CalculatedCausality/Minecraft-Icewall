@@ -129,43 +129,6 @@ Subsystems (cave corruption, weather, disasters, rail, cities, …) have their o
 
 ---
 
-## Project layout
-
-```
-src/main/java/dev/icewall/
-├── IceWallMod.java               # ModInitializer entry point
-├── command/IceWallCommands.java  # /icewall ... subcommands
-├── config/IceWallConfig.java     # All tunable constants
-├── wall/                         # Core wall + every gameplay system
-│   ├── IceWallAdvancer.java      # Tick scheduler, system orchestration
-│   ├── IceWallState.java         # Persisted wall + explored bounds
-│   ├── BlockPlacementQueue.java  # Batched per-tick placement
-│   ├── GlacierCorruption.java    # Surface freeze effects
-│   ├── CaveCorruption.java       # Underground effects
-│   ├── HypothermiaSystem.java    # Cold + health modifier
-│   ├── WeatherEffects.java       # Blizzard / lightning / wind
-│   ├── NaturalDisasters.java     # Random disaster events
-│   ├── DisasterTriggers.java     # Disaster scheduling logic
-│   ├── GlacierRailNetwork.java   # Rail head + spurs
-│   ├── RailTrackLayer.java       # Track placement
-│   ├── RailWorkerCrew.java       # NPC crew management
-│   ├── SupplyDropSystem.java     # Periodic supply drops
-│   ├── VillagerCommunities.java  # Villager evacuation
-│   ├── CommunityBuilder.java     # Visible reconstruction
-│   ├── HeatmapTracker.java       # Rolling per-chunk sample window
-│   └── ...                       # GlacialWhispers, GlacierMobEffects, etc.
-└── city/                         # Procedural survivor cities
-    ├── SurvivorCityGenerator.java
-    ├── CityDomain.java
-    ├── CityBlockBuilder.java
-    ├── CityEventManager.java
-    └── CityLootHelper.java
-```
-
-The design notes that drove the early architecture are in [PLAN.md](PLAN.md). The codebase has since grown well beyond that plan — treat PLAN.md as historical context, not as a spec.
-
----
-
 ## License
 
 All Rights Reserved. See [src/main/resources/fabric.mod.json](src/main/resources/fabric.mod.json). The repo is public for visibility; no redistribution or derivative-work license is granted at this time.
