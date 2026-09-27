@@ -190,20 +190,24 @@ public final class CorruptionSpecialEffects {
     // Frozen chest loot reroll
     // -----------------------------------------------------------------------
 
-    private static final ItemStack[] GLACIER_LOOT = {
-            new ItemStack(Items.PACKED_ICE, 4),
-            new ItemStack(Items.BREAD, 6),
-            new ItemStack(Items.COOKED_BEEF, 4),
-            new ItemStack(Items.LEATHER_HELMET),
-            new ItemStack(Items.LEATHER_CHESTPLATE),
-            new ItemStack(Items.IRON_SWORD),
-            new ItemStack(Items.TORCH, 16),
-            new ItemStack(Items.FLINT_AND_STEEL),
-            new ItemStack(Items.SNOWBALL, 16),
-            new ItemStack(Items.COAL, 8),
-            new ItemStack(Items.ARROW, 12),
-            new ItemStack(Items.BOW),
-    };
+    // ItemStack construction needs bound item components. Initialize only when
+    // a chest is rerolled, after Minecraft's registries have finished loading.
+    private static final class GlacierLoot {
+        private static final ItemStack[] ITEMS = {
+                new ItemStack(Items.PACKED_ICE, 4),
+                new ItemStack(Items.BREAD, 6),
+                new ItemStack(Items.COOKED_BEEF, 4),
+                new ItemStack(Items.LEATHER_HELMET),
+                new ItemStack(Items.LEATHER_CHESTPLATE),
+                new ItemStack(Items.IRON_SWORD),
+                new ItemStack(Items.TORCH, 16),
+                new ItemStack(Items.FLINT_AND_STEEL),
+                new ItemStack(Items.SNOWBALL, 16),
+                new ItemStack(Items.COAL, 8),
+                new ItemStack(Items.ARROW, 12),
+                new ItemStack(Items.BOW),
+        };
+    }
 
     private void tickFrozenChestReroll(ServerLevel world, int wallZ, int minX, int maxX) {
         int width = maxX - minX + 1;
@@ -228,7 +232,7 @@ public final class CorruptionSpecialEffects {
                         java.util.Collections.shuffle(slots, rng);
                         for (int j = 0; j < count && j < slots.size(); j++) {
                             container.setItem(slots.get(j),
-                                    GLACIER_LOOT[rng.nextInt(GLACIER_LOOT.length)].copy());
+                                    GlacierLoot.ITEMS[rng.nextInt(GlacierLoot.ITEMS.length)].copy());
                         }
                         rerolledChests.add(pos);
                         world.playSound(null, pos, SoundEvents.CHEST_CLOSE,

@@ -64,7 +64,7 @@ public final class BlockPlacementQueue {
     }
 
     /**
-     * Fill up to MAX_BLOCKS_PER_TICK blocks this tick, picking tasks in random order.
+     * Examine up to MAX_BLOCKS_PER_TICK blocks this tick, picking tasks in random order.
      * Random selection means different columns advance each tick, producing the organic
      * slow-spread appearance rather than a left-to-right sweep.
      */
@@ -174,7 +174,7 @@ public final class BlockPlacementQueue {
         }
 
         private int fill(ServerLevel world, int budget, BlockState wallState, boolean replaceSolids) {
-            int blocksPlaced = 0;
+            int blocksExamined = 0;
             BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
 
             while (budget > 0 && !isComplete()) {
@@ -186,14 +186,14 @@ public final class BlockPlacementQueue {
                 BlockState currentState = world.getBlockState(mutablePos);
                 if (shouldReplace(world, mutablePos, currentState, replaceSolids)) {
                     world.setBlock(mutablePos, wallState, Block.UPDATE_CLIENTS);
-                    budget -= 1;
-                    blocksPlaced += 1;
                 }
 
+                budget -= 1;
+                blocksExamined += 1;
                 advanceCursor();
             }
 
-            return blocksPlaced;
+            return blocksExamined;
         }
 
         private void advanceCursor() {
