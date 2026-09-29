@@ -14,14 +14,10 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
-import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
-import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
-import net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerBossEvent;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.level.TicketType;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.BossEvent;
@@ -49,6 +45,7 @@ public final class IceWallAdvancer {
     private final GlacierRailNetwork railNetwork = new GlacierRailNetwork();
     private final SurvivorCityGenerator cityGenerator = new SurvivorCityGenerator();
     private final Map<UUID, ServerBossEvent> bossBars = new HashMap<>();
+    private final Map<UUID, Integer> warningTiers = new HashMap<>();
     private final PlayerEffectsTicker effects = new PlayerEffectsTicker();
     private final SupplyDropSystem supplyDrops = new SupplyDropSystem();
     private final Random rng = new Random();
@@ -103,15 +100,13 @@ public final class IceWallAdvancer {
 
         IceWallState state = IceWallState.get(world);
         state.initializeIfNeeded(world);
-        primeCurrentSlice(world, state);
+        state.consumeBootstrapSlice();
 
         if (state.isActive() && state.advanceIfDue()) {
-            placementQueue.enqueueLeadingEdge(world, state.getWallFrontZ(), state.getMinExploredX(), state.getMaxExploredX());
-            preloadChunksAhead(world, state);
             broadcastGlacierAdvance(world, state);
         }
 
-        placementQueue.process(world);
+        if (state.isActive()) placementQueue.process(world, state);
         corruption.tick(world, state);
         caveCorruption.tick(world, state);
         hypothermia.tick(world, state);
@@ -131,55 +126,8 @@ public final class IceWallAdvancer {
     private void onChunkLoad(ServerLevel world, LevelChunk chunk) {
         IceWallState state = IceWallState.get(world);
         state.initializeIfNeeded(world);
-        primeCurrentSlice(world, state);
-        placementQueue.onChunkLoad(world, chunk.getPos());
-
-        IceWallState.BoundExpansion expansion = state.recordLoadedChunk(chunk.getPos());
-        queueExpansion(world, state, expansion.west());
-        queueExpansion(world, state, expansion.east());
+        state.recordLoadedChunk(chunk.getPos());
         cityGenerator.onChunkLoad(world, state, chunk);
-    }
-
-    private void queueExpansion(ServerLevel world, IceWallState state, IceWallState.XRange range) {
-        if (range == null) {
-            return;
-        }
-
-        placementQueue.enqueueRange(world, range.minX(), range.maxX(), state.getStartZ(), state.getWallFrontZ());
-    }
-
-    private void primeWorld(ServerLevel world) {
-        IceWallState state = IceWallState.get(world);
-        state.initializeIfNeeded(world);
-        primeCurrentSlice(world, state);
-    }
-
-    private void primeCurrentSlice(ServerLevel world, IceWallState state) {
-        if (!state.consumeBootstrapSlice()) {
-            return;
-        }
-
-        placementQueue.enqueueLeadingEdge(world, state.getWallFrontZ(), state.getMinExploredX(), state.getMaxExploredX());
-        preloadChunksAhead(world, state);
-    }
-
-    // Force-load CHUNK_PRELOAD_AHEAD chunk columns ahead of the wall front so block placement
-    // never stalls waiting on chunk generation.
-    private void preloadChunksAhead(ServerLevel world, IceWallState state) {
-        int frontZ = state.getWallFrontZ();
-        int minX = state.getMinExploredX();
-        int maxX = state.getMaxExploredX();
-
-        int chunkMinX = minX >> 4;
-        int chunkMaxX = maxX >> 4;
-
-        for (int chunkX = chunkMinX; chunkX <= chunkMaxX; chunkX++) {
-            for (int ahead = 1; ahead <= IceWallConfig.CHUNK_PRELOAD_AHEAD; ahead++) {
-                int chunkZ = ((frontZ + (ahead << 4)) >> 4);
-                ChunkPos pos = new ChunkPos(chunkX, chunkZ);
-                world.getChunkSource().addTicketWithRadius(TicketType.FORCED, pos, 1);
-            }
-        }
     }
 
     private void updatePlayers(ServerLevel world, IceWallState state) {
@@ -204,39 +152,21 @@ public final class IceWallAdvancer {
     }
 
     private void sendWarning(ServerLevel world, ServerPlayer player, int distanceAhead) {
-        long gameTime = world.getGameTime();
-
-        if (distanceAhead <= 10) {
-            // Flash every second
-            if (gameTime % 20L == 0L) {
-                sendTitle(player,
-                    Component.literal("THE GLACIER IS HERE").withStyle(ChatFormatting.DARK_RED, ChatFormatting.BOLD),
-                    Component.literal("You are about to die").withStyle(ChatFormatting.RED),
-                    5, 30, 5);
-                world.playSound(null, player.blockPosition(), SoundEvents.WARDEN_HEARTBEAT, SoundSource.PLAYERS, 1.0F, 1.5F);
-            }
-        } else if (distanceAhead <= 50) {
-            if (gameTime % 60L == 0L) {
-                sendTitle(player,
-                    Component.literal("Run!").withStyle(ChatFormatting.RED, ChatFormatting.BOLD),
-                    Component.literal("Glacier in " + distanceAhead + " blocks").withStyle(ChatFormatting.YELLOW),
-                    10, 40, 10);
-                world.playSound(null, player.blockPosition(), SoundEvents.GLASS_BREAK, SoundSource.PLAYERS, 0.6F, 1.2F);
-            }
-        } else if (distanceAhead <= 100) {
-            if (gameTime % 100L == 0L) {
-                sendTitle(player,
-                    Component.literal("The ice wall approaches…").withStyle(ChatFormatting.YELLOW),
-                    Component.literal(distanceAhead + " blocks away").withStyle(ChatFormatting.WHITE),
-                    10, 40, 10);
-            }
+        int tier = distanceAhead <= 10 ? 2 : distanceAhead <= 50 ? 1 : 0;
+        UUID playerId = player.getUUID();
+        if (tier == 0) {
+            warningTiers.remove(playerId);
+            return;
         }
-    }
-
-    private static void sendTitle(ServerPlayer player, Component title, Component subtitle, int fadeIn, int stay, int fadeOut) {
-        player.connection.send(new ClientboundSetTitlesAnimationPacket(fadeIn, stay, fadeOut));
-        player.connection.send(new ClientboundSetTitleTextPacket(title));
-        player.connection.send(new ClientboundSetSubtitleTextPacket(subtitle));
+        Integer previousTier = warningTiers.put(playerId, tier);
+        if (previousTier == null || previousTier != tier) {
+            // The boss bar carries the continuous distance; only announce new danger tiers.
+            player.connection.send(new ClientboundSetActionBarTextPacket(
+                    Component.literal(tier == 2 ? "Glacier within 10 blocks!" : "Glacier within 50 blocks")
+                            .withStyle(tier == 2 ? ChatFormatting.RED : ChatFormatting.YELLOW)));
+            world.playSound(null, player.blockPosition(), SoundEvents.WARDEN_HEARTBEAT,
+                    SoundSource.PLAYERS, 0.4F, tier == 2 ? 1.2F : 0.8F);
+        }
     }
 
     private void updateBossBar(ServerPlayer player, int distanceAhead, IceWallState state) {
@@ -274,6 +204,7 @@ public final class IceWallAdvancer {
 
     private void removePlayer(ServerPlayer player) {
         ServerBossEvent bossBar = bossBars.remove(player.getUUID());
+        warningTiers.remove(player.getUUID());
         if (bossBar != null) {
             bossBar.removePlayer(player);
         }
@@ -301,25 +232,13 @@ public final class IceWallAdvancer {
     }
 
     // -----------------------------------------------------------------------
-    // Glacier advance event — boom + subtitle broadcast when the wall steps
+    // Glacier advance event — distant rumble when the wall steps
     // -----------------------------------------------------------------------
-
-    private static final String[] ADVANCE_LINES = {
-        "The glacier advances.",
-        "Another metre consumed.",
-        "The ice presses forward.",
-        "There is no stopping it.",
-        "It grows closer.",
-    };
 
     private void broadcastGlacierAdvance(ServerLevel world, IceWallState state) {
         int wallZ = state.getWallFrontZ();
         // Push world spawn to stay safely ahead of the glacier
         pushWorldSpawn(world, state);
-        String line = ADVANCE_LINES[(int) (world.getGameTime() / state.getAdvanceIntervalTicks()
-                % ADVANCE_LINES.length)];
-        Component subtitle = Component.literal("❄ " + line)
-                .withStyle(ChatFormatting.DARK_AQUA, ChatFormatting.ITALIC);
         for (ServerPlayer player : world.players()) {
             if (player.isSpectator()) continue;
             int dist = player.blockPosition().getZ() - wallZ;
@@ -331,10 +250,6 @@ public final class IceWallAdvancer {
             float pitch = 0.35f + (dist / (float) IceWallConfig.BLIZZARD_LOCK_DISTANCE) * 0.25f;
             world.playSound(null, player.blockPosition(),
                     SoundEvents.RAVAGER_STEP, SoundSource.AMBIENT, 1.6f, pitch);
-            // Subtitle (blank title so it doesn’t obscure screen)
-            player.connection.send(new ClientboundSetTitlesAnimationPacket(5, 50, 15));
-            player.connection.send(new ClientboundSetTitleTextPacket(Component.literal("")));
-            player.connection.send(new ClientboundSetSubtitleTextPacket(subtitle));
         }
     }
 

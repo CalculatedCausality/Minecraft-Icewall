@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Random;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.BlockParticleOption;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
@@ -134,19 +136,20 @@ final class DisasterTriggers {
     }
 
     // -----------------------------------------------------------------------
-    // 4. Glacial earthquake — cave-ins + player launch + action-bar shudder
+    // 4. Glacial earthquake — cave-ins + local rumble and ground tremor
     // -----------------------------------------------------------------------
 
     void triggerEarthquake(ServerLevel world, int wallZ, int minX, int maxX) {
+        int range = 320;
         announceAll(world, wallZ,
                 Component.literal("EARTHQUAKE!").withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD),
                 Component.literal("The glacier grinds against the bedrock!").withStyle(ChatFormatting.YELLOW),
-                320);
+                range);
 
         for (int i = 0; i < IceWallConfig.QUAKE_COLLAPSE_COLUMNS; i++) {
             int x = randomX(minX, maxX);
             int z = wallZ - rng.nextInt(IceWallConfig.DISASTER_RANGE_AHEAD + IceWallConfig.DISASTER_RANGE_BEHIND);
-            if (!chunkLoaded(world, x, z)) continue;
+            if (world.getChunkSource().getChunkNow(x >> 4, z >> 4) == null) continue;
             for (int y = world.getMinY() + 1; y < world.getMaxY(); y++) {
                 BlockPos pos = new BlockPos(x, y, z);
                 BlockState bs = world.getBlockState(pos);
@@ -156,16 +159,21 @@ final class DisasterTriggers {
             }
         }
         for (ServerPlayer player : world.players()) {
-            int dist = (int) player.getZ() - wallZ;
-            if (dist < -IceWallConfig.DISASTER_RANGE_BEHIND || dist > IceWallConfig.DISASTER_RANGE_AHEAD) continue;
-            double dx = (rng.nextDouble() - 0.5) * IceWallConfig.QUAKE_LAUNCH_STRENGTH;
-            double dy = IceWallConfig.QUAKE_LAUNCH_STRENGTH * 0.7;
-            double dz = (rng.nextDouble() - 0.5) * IceWallConfig.QUAKE_LAUNCH_STRENGTH;
+            double distance = Math.abs(player.getZ() - wallZ);
+            if (player.isSpectator() || distance > range) continue;
+            double intensity = 1.0 - distance / range;
+            double horizontal = IceWallConfig.QUAKE_LAUNCH_STRENGTH * (0.2 + 0.5 * intensity);
+            double dx = (rng.nextDouble() - 0.5) * horizontal;
+            double dz = (rng.nextDouble() - 0.5) * horizontal;
+            double dy = player.onGround() ? 0.12 + 0.2 * intensity : 0.05;
             player.setDeltaMovement(player.getDeltaMovement().add(dx, dy, dz));
-            player.connection.send(new ClientboundSetActionBarTextPacket(
-                    Component.literal("§8§o⚠ The ground shakes violently!")));
+            player.hurtMarked = true;
+            world.sendParticles(player, new BlockParticleOption(ParticleTypes.BLOCK, Blocks.DIRT.defaultBlockState()),
+                    false, false, player.getX(), player.getY() + 0.2, player.getZ(),
+                    8 + (int) (12 * intensity), 1.5, 0.25, 1.5, 0.08);
+            world.playSound(null, player.blockPosition(), SoundEvents.GENERIC_BIG_FALL,
+                    SoundSource.BLOCKS, 0.8f + (float) intensity, 0.5f);
         }
-        playSoundAround(world, wallZ, minX, maxX, SoundEvents.POINTED_DRIPSTONE_FALL, 3.0f, 0.3f);
     }
 
     // -----------------------------------------------------------------------

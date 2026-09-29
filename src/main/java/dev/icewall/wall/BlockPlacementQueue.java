@@ -1,235 +1,149 @@
 package dev.icewall.wall;
 
 import dev.icewall.config.IceWallConfig;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.level.ChunkPos;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.levelgen.Heightmap;
 
+/**
+ * Keeps one extendable task per nearby X column instead of creating a new task
+ * for every column on every wall advance. The visible face is filled first;
+ * the rest of each column is backfilled with whatever tick budget remains.
+ */
 public final class BlockPlacementQueue {
-    // ArrayList gives O(1) random-index access and O(1) swap-and-remove, enabling
-    // random task selection each tick for an organic fill pattern.
-    private final List<FillTask> readyTasks = new ArrayList<>();
-    private final Map<Long, ArrayDeque<FillTask>> pendingByChunk = new HashMap<>();
+    private static final int PLAYER_COLUMN_RADIUS = 48;
+    private static final int WORK_PER_COLUMN = 8;
+    private static final int SURFACE_DEPTH = 8;
+    private static final int SURFACE_HEIGHT = 24;
+
+    private final Map<Integer, ColumnTask> columns = new HashMap<>();
     private final Random rng = new Random();
 
-    /**
-     * Enqueue the wall's leading edge as individual per-column tasks.
-     * Each X column receives a deterministic Z offset in [0, LEAD_VARIATION] so the
-     * glacier face is an uneven, organic slab rather than a flat plane.
-     * Combined with random task selection in process(), columns fill in at different
-     * rates each tick, making the ice look like it is slowly spreading and freezing.
-     */
-    public void enqueueLeadingEdge(ServerLevel world, int wallZ, int minX, int maxX) {
-        if (minX > maxX) return;
-        int minY = world.getMinY();
-        int maxY = world.getMaxY();
-        for (int x = minX; x <= maxX; x++) {
-            int lead = columnLeadVariation(x);
-            // topDown=true: ice descends from the sky/ceiling so in caves it appears to drip
-            // down through the ceiling before sealing the floor — a more claustrophobic effect.
-            routeTask(world, new FillTask(x, x, wallZ + lead, wallZ + lead, minY, maxY, true));
+    public void process(ServerLevel world, IceWallState state) {
+        int wallZ = state.getWallFrontZ();
+        Set<Integer> wanted = new HashSet<>();
+        for (ServerPlayer player : world.players()) {
+            int centerX = player.blockPosition().getX();
+            for (int x = centerX - PLAYER_COLUMN_RADIUS; x <= centerX + PLAYER_COLUMN_RADIUS; x++) {
+                int targetZ = wallZ + columnLeadVariation(x);
+                if (world.getChunkSource().getChunkNow(x >> 4, targetZ >> 4) == null) continue;
+                wanted.add(x);
+                ColumnTask task = columns.get(x);
+                if (task == null || targetZ < task.surfaceZ - 1 || targetZ - task.surfaceZ > 16) {
+                    columns.put(x, new ColumnTask(x, wallZ, targetZ));
+                } else {
+                    task.extendTo(targetZ);
+                }
+            }
         }
-    }
+        // A column leaving the player's area can be recreated when they return.
+        // Old terrain stays saved without retaining tasks for the whole world.
+        columns.keySet().removeIf(x -> !wanted.contains(x));
 
-    /**
-     * Enqueue a rectangular region for solid backfill (newly explored X bounds).
-     * Processed in whatever order tasks are drawn, but since this fills already-passed
-     * terrain the exact order does not matter visually.
-     */
-    public void enqueueRange(ServerLevel world, int minX, int maxX, int minZ, int maxZ) {
-        if (minX > maxX || minZ > maxZ) {
-            return;
-        }
-        routeTask(world, new FillTask(minX, maxX, minZ, maxZ, world.getMinY(), world.getMaxY(), false));
-    }
-
-    public void onChunkLoad(ServerLevel world, ChunkPos chunkPos) {
-        ArrayDeque<FillTask> pendingTasks = pendingByChunk.remove(chunkPos.pack());
-        if (pendingTasks == null) {
-            return;
-        }
-        while (!pendingTasks.isEmpty()) {
-            routeTask(world, pendingTasks.removeFirst());
-        }
-    }
-
-    /**
-     * Examine up to MAX_BLOCKS_PER_TICK blocks this tick, picking tasks in random order.
-     * Random selection means different columns advance each tick, producing the organic
-     * slow-spread appearance rather than a left-to-right sweep.
-     */
-    public void process(ServerLevel world) {
+        List<ColumnTask> active = new ArrayList<>(columns.values());
+        Collections.shuffle(active, rng);
         int budget = IceWallConfig.MAX_BLOCKS_PER_TICK;
-        // Snapshot the current list size so we never revisit tasks added this tick
-        // by onChunkLoad callbacks, and so the loop terminates if budget reaches 0.
-        int maxTasks = readyTasks.size();
-        for (int i = 0; i < maxTasks && budget > 0 && !readyTasks.isEmpty(); i++) {
-            int idx = rng.nextInt(readyTasks.size());
-            FillTask task = readyTasks.get(idx);
-
-            if (!task.isCurrentChunkLoaded(world)) {
-                removeBySwap(idx);
-                queuePending(task);
-                continue;
-            }
-
-            budget -= task.fill(world, budget, IceWallConfig.WALL_BLOCK, IceWallConfig.REPLACE_SOLIDS);
-
-            if (task.isComplete()) {
-                removeBySwap(idx);
-            }
-            // If not complete the task stays in the list; a future tick's random pick
-            // will eventually resume it.
+        for (ColumnTask task : active) {
+            if (budget == 0) break;
+            budget -= task.fill(world, Math.min(WORK_PER_COLUMN, budget), true);
+        }
+        for (ColumnTask task : active) {
+            if (budget == 0) break;
+            budget -= task.fill(world, Math.min(WORK_PER_COLUMN, budget), false);
         }
     }
 
-    private void routeTask(ServerLevel world, FillTask task) {
-        if (task.isCurrentChunkLoaded(world)) {
-            readyTasks.add(task);
-            return;
-        }
-        queuePending(task);
-    }
-
-    private void queuePending(FillTask task) {
-        pendingByChunk.computeIfAbsent(task.currentChunkKey(), ignored -> new ArrayDeque<>()).addLast(task);
-    }
-
-    /** O(1) removal from ArrayList by swapping with the last element. */
-    private void removeBySwap(int idx) {
-        int last = readyTasks.size() - 1;
-        if (idx != last) {
-            readyTasks.set(idx, readyTasks.get(last));
-        }
-        readyTasks.remove(last);
-    }
-
-    /**
-     * Maps an X coordinate to a deterministic lead offset in [0, LEAD_VARIATION].
-     * Uses a fast integer hash so adjacent columns have uncorrelated offsets,
-     * giving the wall face a natural, non-periodic jagged appearance.
-     */
     private static int columnLeadVariation(int x) {
         int h = x * 0x9E3779B9;
-        h ^= (h >>> 16);
-        return Math.abs(h) % (IceWallConfig.LEAD_VARIATION + 1);
+        h ^= h >>> 16;
+        return (h & Integer.MAX_VALUE) % (IceWallConfig.LEAD_VARIATION + 1);
     }
 
-    private static boolean shouldReplace(ServerLevel world, BlockPos.MutableBlockPos mutablePos, BlockState currentState, boolean replaceSolids) {
-        if (currentState.getBlock() == Blocks.PACKED_ICE) {
-            return false;
-        }
-        if (currentState.getBlock() == Blocks.BEDROCK) {
-            return false;
-        }
-        if (replaceSolids) {
-            return true;
-        }
-        if (currentState.isAir()) {
-            return true;
-        }
-        if (!currentState.getFluidState().isEmpty()) {
-            return true;
-        }
-        if (currentState.canBeReplaced()) {
-            return true;
-        }
-        return !currentState.blocksMotion();
+    private static boolean shouldReplace(BlockState state) {
+        if (state.is(Blocks.PACKED_ICE) || state.is(Blocks.BEDROCK)) return false;
+        return IceWallConfig.REPLACE_SOLIDS || state.isAir() || !state.getFluidState().isEmpty()
+                || state.canBeReplaced() || !state.blocksMotion();
     }
 
-    private static final class FillTask {
-        private final int minX;
-        private final int maxX;
-        private final int minZ;
-        private final int maxZ;
-        private final int bottomY;
-        private final int topYExclusive;
-        private int currentX;
-        private int currentY;
-        private int currentZ;
+    private static final class ColumnTask {
+        private final int x;
+        private int targetZ;
+        private int surfaceZ;
+        private int surfaceY = Integer.MIN_VALUE;
+        private int deepZ;
+        private int deepY = Integer.MIN_VALUE;
+        private final Map<Integer, Integer> originalHeights = new HashMap<>();
 
-        private final boolean topDown;
-
-        private FillTask(int minX, int maxX, int minZ, int maxZ, int bottomY, int topYExclusive, boolean topDown) {
-            this.minX = minX;
-            this.maxX = maxX;
-            this.minZ = minZ;
-            this.maxZ = maxZ;
-            this.bottomY = bottomY;
-            this.topYExclusive = topYExclusive;
-            this.topDown = topDown;
-            this.currentX = minX;
-            this.currentY = topDown ? topYExclusive - 1 : bottomY;
-            this.currentZ = minZ;
+        private ColumnTask(int x, int startZ, int targetZ) {
+            this.x = x;
+            this.targetZ = targetZ;
+            this.surfaceZ = startZ;
+            this.deepZ = startZ;
         }
 
-        private int fill(ServerLevel world, int budget, BlockState wallState, boolean replaceSolids) {
-            int blocksExamined = 0;
-            BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
+        private void extendTo(int z) {
+            targetZ = Math.max(targetZ, z);
+        }
 
-            while (budget > 0 && !isComplete()) {
-                if (!isCurrentChunkLoaded(world)) {
-                    break;
-                }
-
-                mutablePos.set(currentX, currentY, currentZ);
-                BlockState currentState = world.getBlockState(mutablePos);
-                if (shouldReplace(world, mutablePos, currentState, replaceSolids)) {
-                    world.setBlock(mutablePos, wallState, Block.UPDATE_CLIENTS);
-                }
-
-                budget -= 1;
-                blocksExamined += 1;
-                advanceCursor();
+        private int fill(ServerLevel world, int budget, boolean surface) {
+            int examined = 0;
+            BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+            if (!surface && deepZ < surfaceZ - 16) {
+                deepZ = surfaceZ - 16;
+                deepY = Integer.MIN_VALUE;
+                originalHeights.keySet().removeIf(z -> z < deepZ);
             }
-
-            return blocksExamined;
-        }
-
-        private void advanceCursor() {
-            if (topDown) {
-                currentY -= 1;
-                if (currentY >= bottomY) {
-                    return;
+            while (examined < budget) {
+                int z = surface ? surfaceZ : deepZ;
+                if (z > targetZ || (!surface && z >= surfaceZ)) break;
+                LevelChunk chunk = world.getChunkSource().getChunkNow(x >> 4, z >> 4);
+                if (chunk == null) break;
+                int height = surface
+                        ? originalHeights.computeIfAbsent(z, ignored ->
+                                chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x & 15, z & 15))
+                        : originalHeights.get(z);
+                int bottom = Math.max(world.getMinY(), height - SURFACE_DEPTH);
+                int top = Math.min(world.getMaxY(), height + SURFACE_HEIGHT);
+                int y;
+                if (surface) {
+                    if (surfaceY == Integer.MIN_VALUE) surfaceY = top - 1;
+                    if (surfaceY < bottom) {
+                        surfaceZ++;
+                        surfaceY = Integer.MIN_VALUE;
+                        continue;
+                    }
+                    y = surfaceY--;
+                } else {
+                    if (deepY == Integer.MIN_VALUE) deepY = world.getMinY();
+                    if (deepY >= bottom && deepY < top) deepY = top;
+                    if (deepY >= world.getMaxY()) {
+                        originalHeights.remove(z);
+                        deepZ++;
+                        deepY = Integer.MIN_VALUE;
+                        continue;
+                    }
+                    y = deepY++;
                 }
-                currentY = topYExclusive - 1;
-            } else {
-                currentY += 1;
-                if (currentY < topYExclusive) {
-                    return;
+                pos.set(x, y, z);
+                if (shouldReplace(world.getBlockState(pos))) {
+                    world.setBlock(pos, IceWallConfig.WALL_BLOCK, Block.UPDATE_CLIENTS);
                 }
-                currentY = bottomY;
+                examined++;
             }
-            currentX += 1;
-            if (currentX <= maxX) {
-                return;
-            }
-            currentX = minX;
-            currentZ += 1;
-        }
-
-        private boolean isComplete() {
-            return currentZ > maxZ;
-        }
-
-        private boolean isCurrentChunkLoaded(ServerLevel world) {
-            int chunkX = currentX >> 4;
-            int chunkZ = currentZ >> 4;
-            return world.getChunk(chunkX, chunkZ, ChunkStatus.FULL, false) != null;
-        }
-
-        private long currentChunkKey() {
-            return ChunkPos.pack(currentX >> 4, currentZ >> 4);
+            return examined;
         }
     }
 }

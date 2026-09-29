@@ -118,7 +118,7 @@ public final class IceWallState extends SavedData {
         return true;
     }
 
-    public BoundExpansion recordLoadedChunk(ChunkPos chunkPos) {
+    public void recordLoadedChunk(ChunkPos chunkPos) {
         int oldMin = minExploredX;
         int oldMax = maxExploredX;
         int chunkMinX = chunkPos.getMinBlockX();
@@ -134,10 +134,6 @@ public final class IceWallState extends SavedData {
         if (minExploredX != oldMin || maxExploredX != oldMax) {
             setDirty();
         }
-
-        XRange west = chunkMinX < oldMin ? new XRange(chunkMinX, oldMin - 1) : null;
-        XRange east = chunkMaxX > oldMax ? new XRange(oldMax + 1, chunkMaxX) : null;
-        return new BoundExpansion(west, east);
     }
 
     public int getStartZ() {
@@ -187,9 +183,4 @@ public final class IceWallState extends SavedData {
         setDirty();
     }
 
-    public record XRange(int minX, int maxX) {
-    }
-
-    public record BoundExpansion(XRange west, XRange east) {
-    }
 }

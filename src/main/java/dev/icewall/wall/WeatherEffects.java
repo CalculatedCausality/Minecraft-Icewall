@@ -29,16 +29,14 @@ import net.minecraft.world.phys.AABB;
  * Systems contained here:
  *   0.  Snow onset        — light snowfall + SNOWFLAKE particles at SNOW_ONSET_DISTANCE
  *   1.  Blizzard lock     — forced thunderstorm when wall within BLIZZARD_LOCK_DISTANCE
- *   2.  Whiteout fog      — Blindness pulses at WHITEOUT_DISTANCE
- *   3.  Lightning strikes — random bolts near the wall every ~LIGHTNING_INTERVAL_TICKS
- *   4.  Freeze wind push  — constant north/up knockback vector within WIND_PUSH_DISTANCE
+ *   2.  Lightning strikes — random bolts near the wall every ~LIGHTNING_INTERVAL_TICKS
+ *   3.  Freeze wind push  — constant north/up knockback vector within WIND_PUSH_DISTANCE
  *   5.  Snowdrift         — snow layers stack up behind the wall over time
  *   6.  River flash-freeze — burst-freezes entire water chunks the moment the wall passes
  *   7.  Temperature HUD   — cosmetic °C actionbar readout scaling with proximity
- *   8.  Freeze heartbeat  — Freezing effect ticks sent without damage at <20 blocks
- *   9.  Frostbite scar    — Weakness I for 3 min applied on kill (called externally)
- *  10.  Frost footsteps   — snow layers form under players moving in the blizzard zone
- *  11.  Indoor icicle drop — FallingBlockEntity dripstone drops on sheltered players
+ *   8.  Frostbite scar    — Weakness I for 3 min applied on kill (called externally)
+ *   9.  Frost footsteps   — snow layers form under players moving in the blizzard zone
+ *  10.  Indoor icicle drop — FallingBlockEntity dripstone drops on sheltered players
  */
 public final class WeatherEffects {
 
@@ -70,10 +68,8 @@ public final class WeatherEffects {
             if (dist > IceWallConfig.BLIZZARD_LOCK_DISTANCE) continue;
             anyClose = true;
 
-            tickWhiteout(world, player, dist);
             tickWindPush(player, dist);
             tickTemperatureHud(world, player, dist);
-            tickFreezeHeartbeat(player, dist);
             tickFrostFootstep(world, player, dist);
         }
 
@@ -96,15 +92,14 @@ public final class WeatherEffects {
     // -----------------------------------------------------------------------
 
     /**
-     * Sends SNOWFLAKE particles around the player. Density scales from a gentle flurry
-     * at SNOW_ONSET_DISTANCE down to a blinding whiteout at BLIZZARD_LOCK_DISTANCE.
-     * Runs every 4 ticks (staggered per player) to avoid packet spam.
+     * Sends a light snowfall around the player without obscuring the view.
+     * Runs every 12 ticks (staggered per player) to avoid packet spam.
      */
     private void tickSnowParticles(ServerLevel world, ServerPlayer player, int dist) {
-        if ((world.getGameTime() + player.getId()) % 4L != 0L) return;
+        if ((world.getGameTime() + player.getId()) % 12L != 0L) return;
         double fraction = 1.0 - (double) dist / IceWallConfig.SNOW_ONSET_DISTANCE;
-        // 1 particle at the horizon → 30 in the blizzard fringe
-        int count = Math.max(1, (int) (30.0 * fraction));
+        // 1 particle at the horizon → 5 in the blizzard fringe
+        int count = Math.max(1, (int) (5.0 * fraction));
         double spread = 10.0 + 6.0 * (1.0 - fraction); // tighter near wall
         world.sendParticles(player,
                 net.minecraft.core.particles.ParticleTypes.SNOWFLAKE,
@@ -160,17 +155,6 @@ public final class WeatherEffects {
             blizzardActive  = false;
             lightRainActive = false;
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // 2. Whiteout fog (Blindness pulses)
-    // -----------------------------------------------------------------------
-
-    private void tickWhiteout(ServerLevel world, ServerPlayer player, int dist) {
-        if (dist > IceWallConfig.WHITEOUT_DISTANCE) return;
-        if (world.getGameTime() % IceWallConfig.WHITEOUT_INTERVAL_TICKS != 0L) return;
-        player.addEffect(new MobEffectInstance(
-                MobEffects.BLINDNESS, IceWallConfig.WHITEOUT_DURATION_TICKS, 0, false, false));
     }
 
     // -----------------------------------------------------------------------
@@ -298,19 +282,6 @@ public final class WeatherEffects {
                 : ChatFormatting.DARK_AQUA;
         player.connection.send(new ClientboundSetActionBarTextPacket(
                 Component.literal("\uD83C\uDF21 " + celsius + "\u00B0C").withStyle(colour)));
-    }
-
-    // -----------------------------------------------------------------------
-    // 8. Freeze heartbeat (visual freeze effect, no damage)
-    // -----------------------------------------------------------------------
-
-    private void tickFreezeHeartbeat(ServerPlayer player, int dist) {
-        if (dist > 20) return;
-        // Set freeze ticks high enough to show the vignette overlay; reset after 5 ticks
-        int currentFreeze = player.getTicksFrozen();
-        if (currentFreeze < 100) {
-            player.setTicksFrozen(140);
-        }
     }
 
     // -----------------------------------------------------------------------

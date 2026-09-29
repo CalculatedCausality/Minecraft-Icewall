@@ -5,12 +5,11 @@ import net.minecraft.world.level.block.state.BlockState;
 
 public final class IceWallConfig {
     public static final int DEFAULT_ADVANCE_INTERVAL_TICKS = 20 * 30;
-    public static final int MAX_BLOCKS_PER_TICK = 512;
+    public static final int MAX_BLOCKS_PER_TICK = 256;
     public static final int START_OFFSET_BLOCKS = 128;
     public static final int BOSS_BAR_DISTANCE = 200;
     public static final boolean REPLACE_SOLIDS = false;
     public static final BlockState WALL_BLOCK = Blocks.PACKED_ICE.defaultBlockState();
-    public static final int CHUNK_PRELOAD_AHEAD = 4;
 
     /**
      * Maximum number of blocks the leading edge of a column can be ahead of wallFrontZ.
@@ -112,12 +111,6 @@ public final class IceWallConfig {
     // Distance at which light snowfall begins (before the full blizzard kicks in).
     public static final int SNOW_ONSET_DISTANCE    = 600;
     public static final int BLIZZARD_LOCK_DISTANCE = 300;
-    // Distance at which whiteout blindness pulses are applied.
-    public static final int WHITEOUT_DISTANCE = 50;
-    // Ticks between whiteout blindness pulses.
-    public static final int WHITEOUT_INTERVAL_TICKS = 60;
-    // Blindness duration per pulse (ticks).
-    public static final int WHITEOUT_DURATION_TICKS = 40;
     // Distance within which random lightning strikes are summoned.
     public static final int LIGHTNING_DISTANCE = 80;
     // Average ticks between individual lightning strikes (geometric distribution).
@@ -233,9 +226,9 @@ public final class IceWallConfig {
     public static final int WHISPER_DISTANCE_CRITICAL = 100;  // < this → tier 2 (dramatic subtitle)
     public static final int WHISPER_DISTANCE_NEAR     = 300;  // < this → tier 1 (actionbar urgent)
     // Minimum ticks between whispers per player per tier.
-    public static final int WHISPER_INTERVAL_CRITICAL = 100;
-    public static final int WHISPER_INTERVAL_NEAR     = 200;
-    public static final int WHISPER_INTERVAL_FAR      = 400;
+    public static final int WHISPER_INTERVAL_CRITICAL = 400;
+    public static final int WHISPER_INTERVAL_NEAR     = 500;
+    public static final int WHISPER_INTERVAL_FAR      = 800;
 
     // Animal panic — passive mobs flee northward within this distance.
     public static final int ANIMAL_PANIC_DISTANCE = 100;

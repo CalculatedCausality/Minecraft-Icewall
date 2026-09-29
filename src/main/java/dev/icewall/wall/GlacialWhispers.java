@@ -9,9 +9,6 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
-import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
-import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
-import net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
@@ -25,7 +22,7 @@ import net.minecraft.sounds.SoundSource;
  *
  *   Tier 0 — Far approach (600–300 blocks): rare whispers on the actionbar.
  *   Tier 1 — Near approach (300–100 blocks): more frequent actionbar messages.
- *   Tier 2 — Critical zone (<100 blocks): dramatic subtitles.
+ *   Tier 2 — Critical zone (<100 blocks): occasional actionbar messages.
  *
  * Each player has an independent per-tier cooldown so multiple players do not
  * receive messages in lockstep.
@@ -121,10 +118,7 @@ public final class GlacialWhispers {
         switch (tier) {
             case 2 -> {
                 msg = WHISPERS_CRITICAL[rng.nextInt(WHISPERS_CRITICAL.length)];
-                // Dramatic subtitle (blank title so only subtitle shows)
-                player.connection.send(new ClientboundSetTitlesAnimationPacket(15, 60, 20));
-                player.connection.send(new ClientboundSetTitleTextPacket(Component.literal("")));
-                player.connection.send(new ClientboundSetSubtitleTextPacket(
+                player.connection.send(new ClientboundSetActionBarTextPacket(
                         Component.literal("\u2744 " + msg)
                                 .withStyle(ChatFormatting.DARK_AQUA, ChatFormatting.ITALIC)));
             }

@@ -9,6 +9,7 @@ import dev.icewall.city.CityDomain.CityStyle;
 import dev.icewall.city.CityEventManager;
 import dev.icewall.city.CityLootHelper;
 import dev.icewall.config.IceWallConfig;
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -48,6 +49,8 @@ public final class SurvivorCityGenerator {
     // Per-chunk generation guards
     private final Set<Long> generatedChunks    = new HashSet<>();
     private final Set<Long> frozenRuinedChunks = new HashSet<>();
+    private final ArrayDeque<ChunkPos> pendingChunks = new ArrayDeque<>();
+    private final Set<Long> queuedChunks = new HashSet<>();
 
     // Helpers
     private final CityLootHelper   loot   = new CityLootHelper();
@@ -59,6 +62,7 @@ public final class SurvivorCityGenerator {
 
     public void tick(ServerLevel world, IceWallState state) {
         if (!state.isActive()) return;
+        processPendingChunks(world, state);
         long gameTime = world.getGameTime();
         if (gameTime % IceWallConfig.CITY_PLAYER_SCAN_INTERVAL_TICKS != 0L) return;
 
@@ -136,23 +140,61 @@ public final class SurvivorCityGenerator {
         boolean cityChunk = Math.abs(dx) <= IceWallConfig.CITY_RADIUS_CHUNKS
                 && Math.abs(dz) <= IceWallConfig.CITY_RADIUS_CHUNKS;
 
-        if (cityChunk && distAhead <= IceWallConfig.CITY_RUIN_START_DISTANCE) {
-            if (frozenRuinedChunks.add(key)) {
-                CityProfile profile = CityDomain.profileFor(anchor);
-                Random random = new Random(anchor.seed() ^ (pos.pack() * 97L) ^ 0xF7057EDC17EL);
-                freezeCityChunk(world, pos, profile, random);
-            }
-            return;
+        if (!cityChunk || queuedChunks.contains(key)) return;
+        boolean ruin = distAhead <= IceWallConfig.CITY_RUIN_START_DISTANCE;
+        boolean newCity = distAhead >= IceWallConfig.CITY_MIN_DISTANCE_AHEAD
+                && distAhead <= IceWallConfig.CITY_MAX_DISTANCE_AHEAD;
+        if ((ruin && !frozenRuinedChunks.contains(key))
+                || (newCity && !generatedChunks.contains(key))) {
+            // Chunk-load callbacks can run while the server is waiting for terrain.
+            // Generating a city here would synchronously request neighbouring chunks.
+            queuedChunks.add(key);
+            pendingChunks.addLast(pos);
         }
+    }
 
-        if (!generatedChunks.add(key)) return;
-        if (distAhead < IceWallConfig.CITY_MIN_DISTANCE_AHEAD
-                || distAhead > IceWallConfig.CITY_MAX_DISTANCE_AHEAD) return;
-        if (!cityChunk) return;
+    private void processPendingChunks(ServerLevel world, IceWallState state) {
+        int attempts = Math.min(16, pendingChunks.size());
+        for (int i = 0; i < attempts; i++) {
+            ChunkPos pos = pendingChunks.removeFirst();
+            long key = pos.pack();
+            if (world.getChunkSource().getChunkNow(pos.x(), pos.z()) == null) {
+                queuedChunks.remove(key);
+                continue;
+            }
+            // Roofs and gates can extend into an adjacent chunk. Never request it
+            // synchronously while Minecraft is still generating the spawn area.
+            if (!surroundingChunksLoaded(world, pos)) {
+                pendingChunks.addLast(pos);
+                continue;
+            }
+            queuedChunks.remove(key);
+            int distAhead = pos.getMiddleBlockZ() - state.getWallFrontZ();
+            CityAnchor anchor = CityDomain.nearestAnchor(world, pos.x(), pos.z());
+            int dx = pos.x() - anchor.chunkX();
+            int dz = pos.z() - anchor.chunkZ();
+            CityProfile profile = CityDomain.profileFor(anchor);
+            if (distAhead <= IceWallConfig.CITY_RUIN_START_DISTANCE) {
+                if (frozenRuinedChunks.add(key)) {
+                    Random random = new Random(anchor.seed() ^ (key * 97L) ^ 0xF7057EDC17EL);
+                    freezeCityChunk(world, pos, profile, random);
+                }
+            } else if (distAhead >= IceWallConfig.CITY_MIN_DISTANCE_AHEAD
+                    && distAhead <= IceWallConfig.CITY_MAX_DISTANCE_AHEAD
+                    && generatedChunks.add(key)) {
+                generateCityChunk(world, pos, dx, dz, profile, new Random(anchor.seed() ^ (key * 31L)));
+            }
+            return; // At most one city chunk's block changes per tick.
+        }
+    }
 
-        Random random = new Random(anchor.seed() ^ (pos.pack() * 31L));
-        CityProfile profile = CityDomain.profileFor(anchor);
-        generateCityChunk(world, pos, dx, dz, profile, random);
+    private static boolean surroundingChunksLoaded(ServerLevel world, ChunkPos pos) {
+        for (int x = pos.x() - 1; x <= pos.x() + 1; x++) {
+            for (int z = pos.z() - 1; z <= pos.z() + 1; z++) {
+                if (world.getChunkSource().getChunkNow(x, z) == null) return false;
+            }
+        }
+        return true;
     }
 
     // -----------------------------------------------------------------------
